@@ -8,6 +8,7 @@ Streamlit dashboard integrating:
   • Multi-stage ranking         (Lecture 7)
   • Thompson Sampling bandit    (Lecture 8)
 """
+import html
 import json
 import os
 import sys
@@ -215,6 +216,7 @@ def render_sidebar(df: pd.DataFrame):
                 uid = r.get("url", r.get("id", ""))
                 if not bloom.contains(uid):
                     bloom.add(uid)
+                    r["_data_source"] = "live"  # mark as real API data
                     st.session_state.live_records.append(r)
                     added += 1
             st.sidebar.success(f"Added {added} new records ({len(new_records)-added} duplicates blocked)")
@@ -235,10 +237,10 @@ def render_sidebar(df: pd.DataFrame):
 
 # ── opportunity card ──────────────────────────────────────────────────────────
 def _freshness_badge(created_at: str) -> str:
-    """Returns freshness label based on record age."""
+    """Returns freshness label based on record age. Handles both ISO 8601 and SQL formats."""
     try:
-        from datetime import datetime
-        dt = datetime.strptime(str(created_at)[:19], "%Y-%m-%d %H:%M:%S")
+        raw = str(created_at)[:19].replace("T", " ")  # normalise ISO 8601 → SQL format
+        dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
         days = (datetime.now() - dt).days
         if days <= 7:
             return '<span class="badge" style="background:#1a7f371a;color:#3fb950;border:1px solid #238636">🟢 Fresh</span>'
@@ -252,11 +254,15 @@ def _freshness_badge(created_at: str) -> str:
         return ""
 
 
-def _data_source_badge(url: str) -> str:
-    """Labels data as Demo (synthetic) or Live (real API)."""
-    if "github.com/user/" in str(url) or not str(url).startswith("http"):
-        return '<span class="badge" style="background:#30363d;color:#8b949e;border:1px solid #30363d">🔵 Demo</span>'
-    return '<span class="badge" style="background:#1a7f371a;color:#3fb950;border:1px solid #238636">🟢 Live</span>'
+def _data_source_badge(opp: dict) -> str:
+    """
+    Labels data as Demo (offline/synthetic) or Live (fetched from real API).
+    Uses _data_source field set at fetch time — avoids URL-based guessing
+    which would misclassify synthetic Reddit/HN URLs as Live.
+    """
+    if opp.get("_data_source") == "live":
+        return '<span class="badge" style="background:#1a7f371a;color:#3fb950;border:1px solid #238636">🟢 Live</span>'
+    return '<span class="badge" style="background:#30363d;color:#8b949e;border:1px solid #484f58">🔵 Demo</span>'
 
 
 def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
@@ -279,7 +285,7 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
     if gfi > 0:
         badge_html += f'<span class="badge badge-gfi">✨ {gfi} GFI</span>'
     badge_html += _freshness_badge(opp.get("created_at", ""))
-    badge_html += _data_source_badge(url)
+    badge_html += _data_source_badge(opp)
 
     stats_parts = []
     if stars > 0:
@@ -298,14 +304,15 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
 
     stats_str = " &nbsp;·&nbsp; ".join(stats_parts)
 
-    desc = opp.get("description", "")[:160]
+    desc = html.escape(opp.get("description", "")[:160])
+    safe_title = html.escape(title)
+    safe_url = html.escape(url)
     opp_id = opp.get("id", "")
 
     # Best next action (visible without expanding)
     actions = opp.get("suggested_actions", [])
     best_action = actions[0] if actions else ""
-    # Truncate for display
-    best_action_short = best_action[:120] + "…" if len(best_action) > 120 else best_action
+    best_action_short = html.escape(best_action[:120] + "…" if len(best_action) > 120 else best_action)
 
     col_main, col_score = st.columns([5, 1])
     with col_main:
@@ -313,7 +320,7 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
 <div class="opp-card">
   <div style="margin-bottom:8px">{badge_html}</div>
   <div style="font-size:16px;font-weight:600;color:#e6edf3;margin-bottom:4px">
-    #{rank} &nbsp;<a href="{url}" target="_blank" style="color:#58a6ff;text-decoration:none">{title}</a>
+    #{rank} &nbsp;<a href="{safe_url}" target="_blank" style="color:#58a6ff;text-decoration:none">{safe_title}</a>
   </div>
   <div style="font-size:13px;color:#8b949e;margin-bottom:6px">{desc}</div>
   <div style="font-size:12px;color:#6e7681;margin-bottom:6px">{stats_str}</div>
@@ -505,6 +512,9 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
         time_est = effort_time(effort)
         reason = why_now(opp)
         opp_id = opp.get("id", "")
+        safe_url = html.escape(url)
+        safe_title = html.escape(title[:80])
+        safe_action = html.escape(best_action[:130])
 
         st.markdown(f"""
 <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:10px;display:flex;gap:16px">
@@ -514,15 +524,15 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
   </div>
   <div style="flex:1">
     <div style="font-size:11px;color:#8b949e;margin-bottom:4px">
-      {icon} {source.upper()} &nbsp;·&nbsp; <span style="color:#58a6ff">{domain}</span>
+      {icon} {source.upper()} &nbsp;·&nbsp; <span style="color:#58a6ff">{html.escape(domain)}</span>
       &nbsp;·&nbsp; ⏱ {time_est}
     </div>
     <div style="font-size:15px;font-weight:600;color:#e6edf3;margin-bottom:6px">
-      <a href="{url}" target="_blank" style="color:#e6edf3;text-decoration:none">#{i+1} {title[:80]}</a>
+      <a href="{safe_url}" target="_blank" style="color:#e6edf3;text-decoration:none">#{i+1} {safe_title}</a>
     </div>
     <div style="font-size:12px;color:#8b949e;margin-bottom:6px">{reason}</div>
     <div style="font-size:12px;color:#3fb950;background:#1a7f371a;border-radius:4px;padding:5px 10px;border-left:3px solid #238636">
-      ⚡ <b>Do this:</b> {best_action[:130]}
+      ⚡ <b>Do this:</b> {safe_action}
     </div>
   </div>
 </div>
@@ -930,7 +940,7 @@ def render_persona_tab(df: pd.DataFrame):
         candidates = retrieve_top_k(query_vec, index, id_array, k=300)
         c_ids = [c[0] for c in candidates]
         c_sims = [c[1] for c in candidates]
-        ranked = rank_candidates(df, c_ids, c_sims, top_n=10)
+        ranked = rank_candidates(df, c_ids, c_sims, top_n=10, persona=persona.get("role", ""))
 
         top10 = ranked[:10]
         gfi_count = sum(1 for r in top10 if r.get("good_first_issues", 0) > 0)

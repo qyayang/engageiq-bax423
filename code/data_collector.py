@@ -313,7 +313,11 @@ class StreamingIngester:
             for domain in domains:
                 if self._stop.is_set():
                     break
-                new_records = fetch_hn_stories(domain, n=5) + fetch_reddit_posts(domain, n=5)
+                new_records = (
+                    fetch_hn_stories(domain, n=5)
+                    + fetch_reddit_posts(domain, n=5)
+                    + fetch_github_issues(domain, per_page=5)
+                )
                 for record in new_records:
                     uid = record.get("url", record.get("id", ""))
                     if self._bloom.contains(uid):
