@@ -324,6 +324,7 @@ class StreamingIngester:
                         self.duplicates_blocked += 1
                         continue
                     self._bloom.add(uid)
+                    record["_data_source"] = "live"  # consistent with sidebar fetch
                     try:
                         self._queue.put_nowait(record)
                         self.records_ingested += 1

@@ -123,8 +123,18 @@ class ThompsonBandit:
 
         return metrics
 
-    def precision_at_k(self, ranked_ids: list[str], relevant_domains: set, k: int = 10) -> float:
-        hits = sum(1 for oid in ranked_ids[:k])
+    def precision_at_k(
+        self,
+        ranked_ids: list[str],
+        relevant_domains: set,
+        id_to_domain: dict,
+        k: int = 10,
+    ) -> float:
+        """Fraction of top-k ranked opportunities whose domain is in relevant_domains."""
+        hits = sum(
+            1 for oid in ranked_ids[:k]
+            if id_to_domain.get(oid, "") in relevant_domains
+        )
         return hits / k if k > 0 else 0.0
 
     def save(self, path: Path = STATE_FILE):
