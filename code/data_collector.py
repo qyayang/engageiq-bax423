@@ -70,6 +70,56 @@ def _make_id(source: str, raw_id: str) -> str:
     return hashlib.md5(f"{source}:{raw_id}".encode()).hexdigest()[:16]
 
 
+def fetch_github_issues(domain: str, per_page: int = 30) -> list[dict]:
+    """
+    Fetches real GitHub issues with 'good first issue' or 'help wanted' labels.
+    Issue-level recommendations are more actionable than repo-level.
+    """
+    query = DOMAIN_QUERIES.get(domain, domain)
+    search_q = f"{query} label:\"good first issue\" state:open"
+    url = "https://api.github.com/search/issues"
+    params = {"q": search_q, "sort": "created", "order": "desc", "per_page": per_page}
+    try:
+        resp = requests.get(url, headers=_HEADERS_GH, params=params, timeout=10)
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+    except Exception:
+        return []
+
+    records = []
+    for item in items:
+        repo_url = item.get("repository_url", "")
+        repo_name = repo_url.split("repos/")[-1] if "repos/" in repo_url else ""
+        labels = [lb["name"] for lb in item.get("labels", [])]
+        comments = item.get("comments", 0)
+        record = {
+            "id": _make_id("github_issue", str(item["id"])),
+            "source": "github",
+            "title": f"[Issue] {item.get('title', '')}",
+            "description": (
+                f"GitHub issue in {repo_name}. Labels: {', '.join(labels)}. "
+                f"{comments} comments. {(item.get('body') or '')[:200]}"
+            ),
+            "url": item.get("html_url", ""),
+            "domain": domain,
+            "language": "",
+            "tags": json.dumps(labels[:5]),
+            "stars": 0,
+            "forks": 0,
+            "contributors": 0,
+            "open_issues": 1,
+            "good_first_issues": 1,  # always 1 since we searched for GFI
+            "comments": comments,
+            "upvotes": 0,
+            "activity_score": round(min((comments + 1) / 20, 1.0), 4),
+            "growth_rate": 0.0,
+            "created_at": item.get("created_at", ""),
+            "updated_at": item.get("updated_at", ""),
+        }
+        records.append(record)
+    return records
+
+
 def fetch_github_repos(domain: str, per_page: int = 30) -> list[dict]:
     query = DOMAIN_QUERIES.get(domain, domain)
     url = "https://api.github.com/search/repositories"

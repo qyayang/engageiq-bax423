@@ -203,12 +203,13 @@ def render_sidebar(df: pd.DataFrame):
     )
     if st.sidebar.button("🔄 Fetch Live Updates", use_container_width=True):
         with st.sidebar.spinner("Fetching from APIs…"):
-            from data_collector import fetch_hn_stories, fetch_reddit_posts
+            from data_collector import fetch_hn_stories, fetch_reddit_posts, fetch_github_issues
             interests_now = st.session_state.profile.get("interests", DOMAINS[:3])
             new_records = []
             for domain in interests_now[:3]:
                 new_records += fetch_hn_stories(domain, n=3)
                 new_records += fetch_reddit_posts(domain, n=3)
+                new_records += fetch_github_issues(domain, per_page=5)  # real GFI issues
             added = 0
             for r in new_records:
                 uid = r.get("url", r.get("id", ""))
@@ -455,20 +456,115 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
     elif sort_mode == "Community Health":
         ranked = sorted(ranked, key=lambda x: x.get("community_health", 0), reverse=True)
 
-    # Header stats
+    if not ranked:
+        st.info("No results found. Try adjusting your filters or interests.")
+        return
+
+    bandit = get_bandit()
+
+    # ── ACTION QUEUE: Today's Top 5 ──────────────────────────────────────────
+    EFFORT_LABELS = {(0, 0.35): "~15 min", (0.35, 0.55): "~30 min",
+                     (0.55, 0.70): "~1 hr", (0.70, 1.01): "~2+ hrs"}
+
+    def effort_time(effort_score):
+        for (lo, hi), label in EFFORT_LABELS.items():
+            if lo <= effort_score < hi:
+                return label
+        return "~1 hr"
+
+    def why_now(opp):
+        growth = opp.get("growth_rate", 0)
+        gfi = opp.get("good_first_issues", 0)
+        comments = opp.get("comments", 0)
+        if growth > 50:
+            return f"🔥 Growing fast (+{growth:.0f}/wk) — engage before it goes mainstream"
+        if gfi > 0:
+            return f"✨ {gfi} beginner issue(s) open — low competition right now"
+        if comments < 10 and opp.get("source") in ("reddit", "hackernews"):
+            return "💬 Early thread — your comment gets top visibility"
+        return "⭐ Highly relevant to your profile based on embedding match"
+
+    st.markdown("""
+<div style="background:#161b22;border:1px solid #238636;border-radius:10px;padding:20px;margin-bottom:24px">
+  <div style="font-size:18px;font-weight:700;color:#3fb950;margin-bottom:4px">⚡ Today's Action Queue</div>
+  <div style="font-size:13px;color:#8b949e">Your top 5 highest-value engagements right now — ranked by persona-adjusted score</div>
+</div>
+""", unsafe_allow_html=True)
+
+    for i, opp in enumerate(ranked[:5]):
+        source = opp.get("source", "")
+        icon = SOURCE_ICONS.get(source, "📄")
+        title = opp.get("title", "")
+        url = opp.get("url", "#")
+        domain = opp.get("domain", "")
+        score_pct = int(opp.get("final_score", 0) * 100)
+        score_color = "#3fb950" if score_pct > 65 else "#d29922"
+        actions = opp.get("suggested_actions", [])
+        best_action = actions[0] if actions else "Explore this opportunity"
+        effort = opp.get("effort_score", 0.5)
+        time_est = effort_time(effort)
+        reason = why_now(opp)
+        opp_id = opp.get("id", "")
+
+        st.markdown(f"""
+<div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:10px;display:flex;gap:16px">
+  <div style="min-width:48px;text-align:center;padding-top:4px">
+    <div style="font-size:22px;font-weight:800;color:{score_color}">{score_pct}%</div>
+    <div style="font-size:10px;color:#6e7681">score</div>
+  </div>
+  <div style="flex:1">
+    <div style="font-size:11px;color:#8b949e;margin-bottom:4px">
+      {icon} {source.upper()} &nbsp;·&nbsp; <span style="color:#58a6ff">{domain}</span>
+      &nbsp;·&nbsp; ⏱ {time_est}
+    </div>
+    <div style="font-size:15px;font-weight:600;color:#e6edf3;margin-bottom:6px">
+      <a href="{url}" target="_blank" style="color:#e6edf3;text-decoration:none">#{i+1} {title[:80]}</a>
+    </div>
+    <div style="font-size:12px;color:#8b949e;margin-bottom:6px">{reason}</div>
+    <div style="font-size:12px;color:#3fb950;background:#1a7f371a;border-radius:4px;padding:5px 10px;border-left:3px solid #238636">
+      ⚡ <b>Do this:</b> {best_action[:130]}
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+        aq_col1, aq_col2, aq_col3 = st.columns([1, 1, 1])
+        with aq_col1:
+            if st.button("✅ Done / Engage", key=f"aq_engage_{opp_id}"):
+                bandit.update(opp_id, "engage", domain)
+                bandit.save()
+                st.session_state.feedback_log.append(
+                    {"id": opp_id, "title": title[:50], "feedback": "engage",
+                     "domain": domain, "ts": datetime.now().isoformat()})
+                st.success("Logged! Bandit updated ✓")
+        with aq_col2:
+            if st.button("⏭️ Skip", key=f"aq_skip_{opp_id}"):
+                bandit.update(opp_id, "skip", domain)
+                bandit.save()
+                st.session_state.feedback_log.append(
+                    {"id": opp_id, "title": title[:50], "feedback": "skip",
+                     "domain": domain, "ts": datetime.now().isoformat()})
+                st.info("Skipped ✓")
+        with aq_col3:
+            if st.button("🔖 Save", key=f"aq_bm_{opp_id}"):
+                bandit.update(opp_id, "bookmark", domain)
+                bandit.save()
+                st.session_state.feedback_log.append(
+                    {"id": opp_id, "title": title[:50], "feedback": "bookmark",
+                     "domain": domain, "ts": datetime.now().isoformat()})
+                st.success("Saved ✓")
+
+    st.markdown("---")
+
+    # ── HEADER STATS ─────────────────────────────────────────────────────────
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Opportunities Ranked", f"{len(ranked)}")
     c2.metric("Database Size", f"{len(df):,}")
     c3.metric("Active Interests", f"{len(interests)}")
     c4.metric("Feedback Rounds", f"{bandit.total_rounds}")
 
-    st.markdown("---")
-
-    if not ranked:
-        st.info("No results found. Try adjusting your filters or interests.")
-        return
-
-    bandit = get_bandit()
+    # ── FULL RANKED LIST ──────────────────────────────────────────────────────
+    st.markdown("### 📋 Full Ranked List")
     for i, opp in enumerate(ranked[:20]):
         render_opportunity_card(opp, i + 1, bandit)
 
