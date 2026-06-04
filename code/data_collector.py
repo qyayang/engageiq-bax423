@@ -95,6 +95,7 @@ def fetch_github_issues(domain: str, per_page: int = 30) -> list[dict]:
         record = {
             "id": _make_id("github_issue", str(item["id"])),
             "source": "github",
+            "record_type": "issue",
             "title": f"[Issue] {item.get('title', '')}",
             "description": (
                 f"GitHub issue in {repo_name}. Labels: {', '.join(labels)}. "
@@ -141,6 +142,7 @@ def fetch_github_repos(domain: str, per_page: int = 30) -> list[dict]:
         record = {
             "id": _make_id("github", str(item["id"])),
             "source": "github",
+            "record_type": "repo",
             "title": item.get("full_name", item.get("name", "")),
             "description": item.get("description") or "",
             "url": item.get("html_url", ""),
@@ -196,6 +198,7 @@ def fetch_hn_stories(domain: str, n: int = 20) -> list[dict]:
             record = {
                 "id": _make_id("hackernews", str(story_id)),
                 "source": "hackernews",
+                "record_type": "hn_story",
                 "title": item.get("title", ""),
                 "description": f"HN story — score: {score}, {n_comments} comments. {item.get('url', '')}",
                 "url": item.get("url") or f"https://news.ycombinator.com/item?id={story_id}",
@@ -248,6 +251,7 @@ def fetch_reddit_posts(domain: str, n: int = 20) -> list[dict]:
             record = {
                 "id": _make_id("reddit", data.get("id", "")),
                 "source": "reddit",
+                "record_type": "reddit_post",
                 "title": data.get("title", ""),
                 "description": (data.get("selftext") or "")[:300] or f"Reddit r/{sub}: {data.get('title', '')}",
                 "url": f"https://reddit.com{data.get('permalink', '')}",

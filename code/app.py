@@ -101,23 +101,58 @@ SOURCE_COLORS = {"github": "#58a6ff", "reddit": "#ff6314", "hackernews": "#ff950
 
 
 # ── data loading ────────────────────────────────────────────────────────────
+def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
+    for col in ["stars", "forks", "contributors", "good_first_issues", "comments", "upvotes", "open_issues"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+    for col in ["activity_score", "growth_rate"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    df["description"] = df["description"].fillna("")
+    df["title"] = df["title"].fillna("")
+    # Derive record_type for offline CSV records that pre-date the field
+    if "record_type" not in df.columns:
+        df["record_type"] = df.apply(
+            lambda r: "issue" if "[Issue]" in str(r["title"])
+            else "reddit_post" if r["source"] == "reddit"
+            else "hn_story" if r["source"] == "hackernews"
+            else "repo",
+            axis=1,
+        )
+    if "data_source" not in df.columns:
+        df["data_source"] = df.get("_data_source", "offline")
+    return df
+
+
+@st.cache_resource(show_spinner="Initialising database…")
+def seed_database():
+    """
+    Seeds SQLite from CSV on first run (once per app process).
+    Pipeline: CSV offline snapshot → SQLite → ranking/retrieval.
+    Live API records are appended to SQLite on fetch.
+    """
+    import db as _db
+    _db.init_db()
+    if _db.get_count() == 0 and CSV_PATH.exists():
+        df_seed = pd.read_csv(str(CSV_PATH))
+        df_seed = _clean_df(df_seed)
+        df_seed["data_source"] = "offline"
+        _db.bulk_insert(df_seed.to_dict("records"))
+    return True
+
+
 @st.cache_data(show_spinner="Loading opportunity dataset…")
 def load_data() -> pd.DataFrame:
     if not CSV_PATH.exists():
         st.error(f"Dataset not found at {CSV_PATH}. Run `python generate_offline_data.py` first.")
         st.stop()
-    df = pd.read_csv(str(CSV_PATH))
-    df["stars"] = pd.to_numeric(df["stars"], errors="coerce").fillna(0).astype(int)
-    df["forks"] = pd.to_numeric(df["forks"], errors="coerce").fillna(0).astype(int)
-    df["contributors"] = pd.to_numeric(df["contributors"], errors="coerce").fillna(0).astype(int)
-    df["good_first_issues"] = pd.to_numeric(df["good_first_issues"], errors="coerce").fillna(0).astype(int)
-    df["comments"] = pd.to_numeric(df["comments"], errors="coerce").fillna(0).astype(int)
-    df["upvotes"] = pd.to_numeric(df["upvotes"], errors="coerce").fillna(0).astype(int)
-    df["activity_score"] = pd.to_numeric(df["activity_score"], errors="coerce").fillna(0.0)
-    df["growth_rate"] = pd.to_numeric(df["growth_rate"], errors="coerce").fillna(0.0)
-    df["description"] = df["description"].fillna("")
-    df["title"] = df["title"].fillna("")
-    return df
+    seed_database()  # ensure SQLite is seeded
+    import db as _db
+    try:
+        df = _db.get_all_as_df()
+        if df.empty:
+            raise ValueError("empty")
+    except Exception:
+        df = pd.read_csv(str(CSV_PATH))
+    return _clean_df(df)
 
 
 @st.cache_resource(show_spinner=False)
@@ -212,18 +247,31 @@ def render_sidebar(df: pd.DataFrame):
                 new_records += fetch_reddit_posts(domain, n=3)
                 new_records += fetch_github_issues(domain, per_page=5)  # real GFI issues
             added = 0
+            live_to_persist = []
             for r in new_records:
                 uid = r.get("url", r.get("id", ""))
                 if not bloom.contains(uid):
                     bloom.add(uid)
-                    r["_data_source"] = "live"  # mark as real API data
+                    r["_data_source"] = "live"
                     st.session_state.live_records.append(r)
+                    live_to_persist.append(r)
                     added += 1
-            st.sidebar.success(f"Added {added} new records ({len(new_records)-added} duplicates blocked)")
+            # Persist to SQLite so live records survive session refresh
+            if live_to_persist:
+                import db as _db
+                _db.bulk_insert(live_to_persist)
+                load_data.clear()  # invalidate cache so next load picks up new records
+            st.sidebar.success(
+                f"Added {added} live records → persisted to SQLite "
+                f"({len(new_records)-added} duplicates blocked by Bloom filter)"
+            )
 
     st.sidebar.divider()
-    total = len(df) + len(st.session_state.live_records)
-    st.sidebar.metric("Total Opportunities", f"{total:,}")
+    import db as _db
+    db_count = _db.get_count()
+    live_count = len([r for r in st.session_state.live_records if r.get("_data_source") == "live"])
+    st.sidebar.metric("SQLite Records", f"{db_count:,}")
+    st.sidebar.metric("Live Fetched", f"{live_count:,}")
     st.sidebar.metric("Domains Monitored", f"{df['domain'].nunique()}")
     st.sidebar.metric("Feedback Given", f"{len(st.session_state.feedback_log)}")
 

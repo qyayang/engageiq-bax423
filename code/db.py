@@ -23,6 +23,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS opportunities (
             id           TEXT PRIMARY KEY,
             source       TEXT NOT NULL,
+            record_type  TEXT DEFAULT 'repo',
+            data_source  TEXT DEFAULT 'offline',
             title        TEXT NOT NULL,
             description  TEXT,
             url          TEXT,
@@ -42,6 +44,9 @@ def init_db():
             updated_at   TEXT,
             ingested_at  TEXT DEFAULT (datetime('now'))
         );
+        -- Add columns to existing tables if upgrading
+        CREATE INDEX IF NOT EXISTS idx_opp_record_type ON opportunities(record_type);
+        CREATE INDEX IF NOT EXISTS idx_opp_data_source ON opportunities(data_source);
 
         CREATE TABLE IF NOT EXISTS user_feedback (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,16 +79,43 @@ def bulk_insert(records: list[dict]):
     conn = get_connection()
     conn.executemany("""
         INSERT OR IGNORE INTO opportunities
-            (id, source, title, description, url, domain, language, tags,
-             stars, forks, contributors, open_issues, good_first_issues,
+            (id, source, record_type, data_source, title, description, url, domain,
+             language, tags, stars, forks, contributors, open_issues, good_first_issues,
              comments, upvotes, activity_score, growth_rate, created_at, updated_at)
         VALUES
-            (:id, :source, :title, :description, :url, :domain, :language, :tags,
-             :stars, :forks, :contributors, :open_issues, :good_first_issues,
+            (:id, :source, :record_type, :data_source, :title, :description, :url, :domain,
+             :language, :tags, :stars, :forks, :contributors, :open_issues, :good_first_issues,
              :comments, :upvotes, :activity_score, :growth_rate, :created_at, :updated_at)
-    """, records)
+    """, [_normalize_record(r) for r in records])
     conn.commit()
     conn.close()
+
+
+def _normalize_record(r: dict) -> dict:
+    """Ensure all required fields exist with sensible defaults."""
+    return {
+        "id": r.get("id", ""),
+        "source": r.get("source", ""),
+        "record_type": r.get("record_type", "repo"),
+        "data_source": r.get("_data_source", r.get("data_source", "offline")),
+        "title": r.get("title", ""),
+        "description": r.get("description", ""),
+        "url": r.get("url", ""),
+        "domain": r.get("domain", ""),
+        "language": r.get("language", ""),
+        "tags": r.get("tags", "[]"),
+        "stars": int(r.get("stars", 0) or 0),
+        "forks": int(r.get("forks", 0) or 0),
+        "contributors": int(r.get("contributors", 0) or 0),
+        "open_issues": int(r.get("open_issues", 0) or 0),
+        "good_first_issues": int(r.get("good_first_issues", 0) or 0),
+        "comments": int(r.get("comments", 0) or 0),
+        "upvotes": int(r.get("upvotes", 0) or 0),
+        "activity_score": float(r.get("activity_score", 0) or 0),
+        "growth_rate": float(r.get("growth_rate", 0) or 0),
+        "created_at": r.get("created_at", ""),
+        "updated_at": r.get("updated_at", ""),
+    }
 
 
 def get_all_as_df():
