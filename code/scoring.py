@@ -7,11 +7,35 @@ import numpy as np
 import pandas as pd
 
 
-# Weights for composite engagement score
+# Default weights for composite engagement score
 W_RELEVANCE = 0.40
 W_COMMUNITY = 0.30
 W_VISIBILITY = 0.20
-W_EFFORT_INV = 0.10   # inverted: low effort → higher contribution
+W_EFFORT_INV = 0.10
+
+# Persona-specific scoring strategies (BAX-423: different users have different goals)
+PERSONA_WEIGHTS = {
+    "ML Student": {
+        "relevance": 0.45, "community": 0.20, "visibility": 0.20, "effort_inv": 0.15,
+        "gfi_bonus": 0.12,   # strong boost for good-first-issues
+    },
+    "DevOps Engineer": {
+        "relevance": 0.40, "community": 0.38, "visibility": 0.15, "effort_inv": 0.07,
+        "gfi_bonus": 0.0,    # expert — doesn't need beginner issues
+    },
+    "Data Journalist": {
+        "relevance": 0.25, "community": 0.20, "visibility": 0.35, "effort_inv": 0.05,
+        "gfi_bonus": 0.0,    # prioritises recency and velocity over effort
+    },
+    "Startup Founder": {
+        "relevance": 0.45, "community": 0.28, "visibility": 0.18, "effort_inv": 0.09,
+        "gfi_bonus": 0.0,
+    },
+    "Data Engineer": {
+        "relevance": 0.42, "community": 0.30, "visibility": 0.18, "effort_inv": 0.10,
+        "gfi_bonus": 0.05,
+    },
+}
 
 
 def _safe_log_norm(x: float, scale: float = 1.0) -> float:
@@ -73,7 +97,7 @@ def compute_effort_score(row: dict) -> float:
         return min(words / 300, 0.8)
 
 
-def compute_composite_score(row: dict, relevance: float) -> dict:
+def compute_composite_score(row: dict, relevance: float, persona: str = "") -> dict:
     """
     Returns the full score breakdown for a single opportunity.
     relevance: cosine similarity from embedding retrieval (0–1).
@@ -83,12 +107,25 @@ def compute_composite_score(row: dict, relevance: float) -> dict:
     effort = compute_effort_score(row)
     effort_inv = 1.0 - effort
 
-    composite = (
-        W_RELEVANCE * relevance
-        + W_COMMUNITY * community
-        + W_VISIBILITY * visibility
-        + W_EFFORT_INV * effort_inv
-    )
+    pw = PERSONA_WEIGHTS.get(persona, {})
+    w_rel = pw.get("relevance", W_RELEVANCE)
+    w_com = pw.get("community", W_COMMUNITY)
+    w_vis = pw.get("visibility", W_VISIBILITY)
+    w_eff = pw.get("effort_inv", W_EFFORT_INV)
+
+    composite = w_rel * relevance + w_com * community + w_vis * visibility + w_eff * effort_inv
+
+    # Persona-specific bonus: ML students get a GFI boost
+    gfi_bonus = pw.get("gfi_bonus", 0.0)
+    if gfi_bonus > 0 and row.get("good_first_issues", 0) > 0:
+        composite += gfi_bonus
+
+    # Data journalist: recency boost (recent records score higher)
+    if persona == "Data Journalist":
+        growth = row.get("growth_rate", 0)
+        composite += min(growth / 500, 0.10)
+
+    composite = max(0.0, min(1.0, composite))
 
     return {
         "composite_score": round(composite, 4),

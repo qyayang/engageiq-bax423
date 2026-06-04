@@ -233,6 +233,31 @@ def render_sidebar(df: pd.DataFrame):
 
 
 # ── opportunity card ──────────────────────────────────────────────────────────
+def _freshness_badge(created_at: str) -> str:
+    """Returns freshness label based on record age."""
+    try:
+        from datetime import datetime
+        dt = datetime.strptime(str(created_at)[:19], "%Y-%m-%d %H:%M:%S")
+        days = (datetime.now() - dt).days
+        if days <= 7:
+            return '<span class="badge" style="background:#1a7f371a;color:#3fb950;border:1px solid #238636">🟢 Fresh</span>'
+        elif days <= 30:
+            return '<span class="badge" style="background:#1f6feb1a;color:#58a6ff;border:1px solid #1f6feb">🔵 Recent</span>'
+        elif days <= 90:
+            return '<span class="badge" style="background:#d299221a;color:#d29922;border:1px solid #9e6a03">🟡 Aging</span>'
+        else:
+            return '<span class="badge" style="background:#30363d;color:#6e7681;border:1px solid #30363d">⚪ Archived</span>'
+    except Exception:
+        return ""
+
+
+def _data_source_badge(url: str) -> str:
+    """Labels data as Demo (synthetic) or Live (real API)."""
+    if "github.com/user/" in str(url) or not str(url).startswith("http"):
+        return '<span class="badge" style="background:#30363d;color:#8b949e;border:1px solid #30363d">🔵 Demo</span>'
+    return '<span class="badge" style="background:#1a7f371a;color:#3fb950;border:1px solid #238636">🟢 Live</span>'
+
+
 def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
     source = opp.get("source", "")
     icon = SOURCE_ICONS.get(source, "📄")
@@ -251,7 +276,9 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
     badge_html = f'<span class="badge badge-{source}">{icon} {source.upper()}</span>'
     badge_html += f'<span class="badge badge-domain">{domain}</span>'
     if gfi > 0:
-        badge_html += f'<span class="badge badge-gfi">✨ {gfi} Good First Issues</span>'
+        badge_html += f'<span class="badge badge-gfi">✨ {gfi} GFI</span>'
+    badge_html += _freshness_badge(opp.get("created_at", ""))
+    badge_html += _data_source_badge(url)
 
     stats_parts = []
     if stars > 0:
@@ -259,19 +286,25 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
     if opp.get("forks", 0) > 0:
         stats_parts.append(f"🍴 {opp['forks']:,}")
     if opp.get("contributors", 0) > 0:
-        stats_parts.append(f"👥 {opp['contributors']:,} contributors")
+        stats_parts.append(f"👥 {opp['contributors']:,} contrib.")
     if comments > 0:
         stats_parts.append(f"💬 {comments:,}")
     if upvotes > 0 and source != "github":
         stats_parts.append(f"⬆️ {upvotes:,}")
     growth = opp.get("growth_rate", 0)
     if growth > 5:
-        stats_parts.append(f"🔥 +{growth:.0f} stars/wk")
+        stats_parts.append(f"🔥 +{growth:.0f}/wk")
 
     stats_str = " &nbsp;·&nbsp; ".join(stats_parts)
 
-    desc = opp.get("description", "")[:180]
+    desc = opp.get("description", "")[:160]
     opp_id = opp.get("id", "")
+
+    # Best next action (visible without expanding)
+    actions = opp.get("suggested_actions", [])
+    best_action = actions[0] if actions else ""
+    # Truncate for display
+    best_action_short = best_action[:120] + "…" if len(best_action) > 120 else best_action
 
     col_main, col_score = st.columns([5, 1])
     with col_main:
@@ -281,8 +314,11 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
   <div style="font-size:16px;font-weight:600;color:#e6edf3;margin-bottom:4px">
     #{rank} &nbsp;<a href="{url}" target="_blank" style="color:#58a6ff;text-decoration:none">{title}</a>
   </div>
-  <div style="font-size:13px;color:#8b949e;margin-bottom:8px">{desc}</div>
-  <div style="font-size:12px;color:#6e7681">{stats_str}</div>
+  <div style="font-size:13px;color:#8b949e;margin-bottom:6px">{desc}</div>
+  <div style="font-size:12px;color:#6e7681;margin-bottom:6px">{stats_str}</div>
+  <div style="font-size:12px;color:#3fb950;background:#1a7f371a;border-radius:4px;padding:6px 10px;border-left:3px solid #238636">
+    ⚡ <b>Best Action:</b> {best_action_short}
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -337,27 +373,30 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
         with fb_col1:
             if st.button(f"✅ Engage", key=f"engage_{opp_id}"):
                 bandit.update(opp_id, "engage", domain)
+                bandit.save()  # persist after every action
                 st.session_state.feedback_log.append(
                     {"id": opp_id, "title": title[:50], "feedback": "engage",
                      "domain": domain, "ts": datetime.now().isoformat()}
                 )
-                st.success("Marked as Engage!")
+                st.success("Marked as Engage! Bandit updated ✓")
         with fb_col2:
             if st.button(f"⏭️ Skip", key=f"skip_{opp_id}"):
                 bandit.update(opp_id, "skip", domain)
+                bandit.save()
                 st.session_state.feedback_log.append(
                     {"id": opp_id, "title": title[:50], "feedback": "skip",
                      "domain": domain, "ts": datetime.now().isoformat()}
                 )
-                st.info("Skipped.")
+                st.info("Skipped. Bandit updated ✓")
         with fb_col3:
             if st.button(f"🔖 Bookmark", key=f"bm_{opp_id}"):
                 bandit.update(opp_id, "bookmark", domain)
+                bandit.save()
                 st.session_state.feedback_log.append(
                     {"id": opp_id, "title": title[:50], "feedback": "bookmark",
                      "domain": domain, "ts": datetime.now().isoformat()}
                 )
-                st.success("Bookmarked!")
+                st.success("Bookmarked! Bandit updated ✓")
 
 
 # ── tab: opportunities ────────────────────────────────────────────────────────
@@ -407,6 +446,7 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
             "exclude_no_gfi": filters.get("exclude_no_gfi", False),
         },
         top_n=50,
+        persona=profile.get("role", ""),
     )
 
     # Apply sort mode override
@@ -883,6 +923,7 @@ def main():
         bandit_scores=bandit.get_bandit_scores(c_ids),
         domain_prefs=bandit.get_domain_preferences(),
         top_n=50,
+        persona=profile.get("role", ""),
     )
 
     with tabs[0]:

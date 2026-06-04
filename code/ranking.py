@@ -34,6 +34,7 @@ def rank_candidates(
     domain_prefs: Optional[dict] = None,
     filters: Optional[dict] = None,
     top_n: int = 50,
+    persona: str = "",
 ) -> list[dict]:
     """
     Full multi-stage ranking:
@@ -63,7 +64,7 @@ def rank_candidates(
     for _, row in subset.iterrows():
         row_dict = row.to_dict()
         sim = id_to_sim.get(row_dict["id"], 0.0)
-        scores = compute_composite_score(row_dict, sim)
+        scores = compute_composite_score(row_dict, sim, persona=persona)
 
         # Bandit adjustment
         bandit_boost = 0.0
