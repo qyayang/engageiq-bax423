@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# Auto-generated embedding cache (too large for GitHub, recomputed on first run)
+data/embeddings.npy
+data/embedding_ids.npy
+data/engageiq.db
+data/bandit_state.json
+
+# Env
+.env
+*.env
