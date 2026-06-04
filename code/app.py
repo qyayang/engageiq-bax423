@@ -131,7 +131,8 @@ def seed_database():
     """
     import db as _db
     _db.init_db()
-    if _db.get_count() == 0 and CSV_PATH.exists():
+    # Seed if offline records are below threshold — handles partial/test DB states
+    if _db.get_count_by_datasource("offline") < 5000 and CSV_PATH.exists():
         df_seed = pd.read_csv(str(CSV_PATH))
         df_seed = _clean_df(df_seed)
         df_seed["data_source"] = "offline"

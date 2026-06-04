@@ -133,6 +133,15 @@ def get_count() -> int:
     return n
 
 
+def get_count_by_datasource(data_source: str) -> int:
+    conn = get_connection()
+    n = conn.execute(
+        "SELECT COUNT(*) FROM opportunities WHERE data_source = ?", (data_source,)
+    ).fetchone()[0]
+    conn.close()
+    return n
+
+
 def save_feedback(opportunity_id: str, feedback: str, session_id: str = "default"):
     conn = get_connection()
     conn.execute(
