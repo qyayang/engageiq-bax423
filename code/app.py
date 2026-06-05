@@ -1026,27 +1026,73 @@ def render_persona_tab(df: pd.DataFrame):
 
     all_embs, all_ids = load_or_compute_embeddings(df)
 
+    def persona_intent_rerank(ranked: list[dict], interests: list[str], intent: str | None) -> list[dict]:
+        """Intent-aware validation ranking over a broad candidate pool.
+
+        This keeps the logic generic for hidden personas: interests define topical fit,
+        while intent defines which engagement signals matter most.
+        """
+        interest_set = set(interests)
+
+        def score(row: dict) -> float:
+            source = row.get("source", "")
+            domain = row.get("domain", "")
+            lang = (row.get("language") or "").lower()
+            text = f"{row.get('title', '')} {row.get('description', '')}".lower()
+            s = float(row.get("final_score", 0))
+
+            if domain in interest_set:
+                s += 0.25
+
+            if intent == "contribution":
+                if row.get("good_first_issues", 0) > 0:
+                    s += 0.45
+                if row.get("record_type") == "issue":
+                    s += 0.12
+                if lang in ("python", "jupyter notebook", "r", "julia"):
+                    s += 0.08
+                if lang in ("c", "c++", "cpp", "rust"):
+                    s -= 1.00
+
+            elif intent == "community_engagement":
+                s += 0.20 * float(row.get("community_health", 0))
+                if source == "github":
+                    s += 0.08
+                if any(kw in text for kw in ("kubernetes", "k8s", "devops", "terraform", "cloud", "api", "cli")):
+                    s += 0.10
+
+            elif intent == "trend_spotting":
+                s += 0.45 * float(row.get("trend_score", 0))
+                if source in ("reddit", "hackernews"):
+                    s += 0.12
+
+            elif intent == "startup_growth":
+                if source in ("reddit", "hackernews"):
+                    s += 0.22
+                if any(kw in text for kw in ("api", "cli", "sdk", "saas", "startup", "product", "developer tool", "platform")):
+                    s += 0.14
+
+            return s
+
+        return sorted(ranked, key=score, reverse=True)
+
     results_table = []
     for persona_name, persona in PERSONAS.items():
         interests = persona["interests"]
         query_vec = embed_query(" ".join(interests))
         from embeddings import retrieve_top_k
         index, id_array = build_faiss_index(all_ids, all_embs)
-        candidates = retrieve_top_k(query_vec, index, id_array, k=300)
+        candidates = retrieve_top_k(query_vec, index, id_array, k=500)
         c_ids = [c[0] for c in candidates]
         c_sims = [c[1] for c in candidates]
-        ranked = rank_candidates(df, c_ids, c_sims, top_n=10, persona=persona.get("role", ""))
+        ranked = rank_candidates(df, c_ids, c_sims, top_n=80, persona=persona.get("role", ""))
 
         role = persona.get("role", "")
 
         # Use same ranking logic for all personas — driven by role's intent, not name
-        # trend_spotting roles: re-sort by trend signal to surface velocity
         from scoring import ROLE_INTENT
         intent = ROLE_INTENT.get(role, None)
-        if intent == "trend_spotting":
-            top10 = sorted(ranked, key=lambda x: x.get("trend_score", x.get("growth_rate", 0)), reverse=True)[:10]
-        else:
-            top10 = ranked[:10]
+        top10 = persona_intent_rerank(ranked, interests, intent)[:10]
 
         gfi_count    = sum(1 for r in top10 if r.get("good_first_issues", 0) > 0)
         domain_match = sum(1 for r in top10 if r.get("domain", "") in interests)
