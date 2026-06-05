@@ -240,29 +240,62 @@ def build_score_explanation(row: dict, scores: dict) -> str:
     return "\n\n".join(parts)
 
 
-def suggest_actions(row: dict) -> list[str]:
+def suggest_actions(row: dict, persona: str = "") -> list[str]:
+    """Specific, rule-based next actions for the recommendation card."""
     source = row.get("source", "")
     domain = row.get("domain", "")
+    record_type = row.get("record_type", "")
+    title = row.get("title", "")
+    text = f"{title} {row.get('description', '')}".lower()
+    intent = ROLE_INTENT.get(persona)
     actions = []
 
     if source == "github":
-        gfi   = row.get("good_first_issues", 0)
+        gfi = row.get("good_first_issues", 0)
         stars = row.get("stars", 0)
-        if gfi > 0:
-            actions.append(f"Look for issues labeled `good first issue` in this repo — {gfi} are currently open")
-        actions.append(f"Star the repo and explore the codebase to understand its architecture before contributing")
-        actions.append(f"Open a draft PR with improvements to documentation or test coverage to introduce yourself")
-        if stars > 1000:
-            actions.append(f"Review open issues and comment with your analysis to demonstrate expertise in {domain}")
+
+        if record_type == "issue" or title.startswith("[Issue]"):
+            actions.append("Open the issue and leave one useful comment: a reproduction step, likely file to inspect, or a short implementation plan.")
+            if gfi > 0:
+                actions.append("Ask whether you can take the good-first issue and mention the exact first step you will try.")
+        elif gfi > 0:
+            actions.append(f"Start with the {gfi} good-first issue queue; pick one docs, test, or small bug item before reading the whole repo.")
+        elif stars > 5000:
+            actions.append("Scan recent issues for an unanswered question and add a concise technical diagnosis instead of opening a new PR immediately.")
         else:
-            actions.append(f"This smaller repo ({stars:,} stars) is ideal — your contributions will have high impact")
+            actions.append("Read the README and recent commits, then propose one small docs or test improvement that matches the maintainer's current work.")
+
+        if intent == "contribution":
+            actions.append("Keep the first contribution small enough to finish in one sitting; avoid broad refactors on the first touch.")
+        elif intent == "startup_growth":
+            actions.append("Check whether the repo exposes an API, plugin, or integration surface before reaching out about partnership.")
+        else:
+            actions.append(f"Use the repo as a concrete {domain} example: note one design choice worth reusing or questioning.")
+
     elif source == "reddit":
-        actions.append(f"Add a detailed comment sharing your personal experience with {domain} — be specific, not generic")
-        actions.append(f"If you've solved a related problem, link to a GitHub repo or write-up as supporting evidence")
-        actions.append(f"Engage with top commenters by asking follow-up questions to build community presence")
+        if any(kw in text for kw in ("help", "how do i", "what should", "recommend", "advice")):
+            actions.append(f"Reply with one concrete {domain} example and a tradeoff; avoid a list of generic tools.")
+        elif intent == "startup_growth":
+            actions.append("Answer the thread first, then mention your product only if it directly solves the stated problem and disclose your connection.")
+        elif intent == "trend_spotting":
+            actions.append("Save the thread as a trend lead and compare the comments against two similar discussions before writing it up.")
+        else:
+            actions.append(f"Add a short comment with a specific lesson learned from {domain}, then ask one follow-up question.")
+
+        actions.append("Engage with the most technical reply in the thread; that is usually where a useful conversation starts.")
+        actions.append("If you link anything, use one supporting repo, benchmark, or write-up rather than a promotional link dump.")
+
     else:
-        actions.append(f"Write a substantive comment with your technical perspective — HN rewards depth over breadth")
-        actions.append(f"If you have a related project, add it as a Show HN reply with benchmarks or demo link")
-        actions.append(f"Track this thread's discussion and return to add follow-up context as the conversation evolves")
+        if intent == "trend_spotting":
+            actions.append("Read the linked story, then capture the trend angle: what changed, who is affected, and what signal would confirm it next week.")
+        elif intent == "startup_growth":
+            actions.append("Join the HN discussion with a practical operator's angle; mention a product only if the thread asks for solutions.")
+        elif any(kw in text for kw in ("security", "vulnerability", "token", "bug", "hack")):
+            actions.append("Comment with one concrete risk, mitigation, or reproduction question; avoid speculation beyond the article.")
+        else:
+            actions.append(f"Add a technical comment that connects the article to a real {domain} use case or limitation.")
+
+        actions.append("Prefer replying to an existing high-signal comment over posting a standalone hot take.")
+        actions.append("Return later if the discussion grows; late comments work best when they add evidence, benchmarks, or a correction.")
 
     return actions
