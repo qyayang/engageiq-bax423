@@ -149,7 +149,7 @@ def benchmark_ranking_methods(
     random_scores = [relevance(i) for i in random_ids]
 
     # Method 2: Stars-only
-    id_to_stars = {row["id"]: row.get("stars", 0) for _, row in sample_df.iterrows()}
+    id_to_stars = {idx: row.get("stars", 0) for idx, row in sample_df.iterrows()}
     stars_ranked = sorted(sample_ids, key=lambda i: id_to_stars.get(i, 0), reverse=True)[:k]
     stars_scores = [relevance(i) for i in stars_ranked]
 
