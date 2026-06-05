@@ -66,19 +66,22 @@ def rank_candidates(
         sim = id_to_sim.get(row_dict["id"], 0.0)
         scores = compute_composite_score(row_dict, sim, persona=persona)
 
-        # Bandit adjustment
+        # Bandit adjustment (item-level): engaged items rise, skipped items fall
         bandit_boost = 0.0
         if bandit_scores:
             opp_id = row_dict["id"]
-            bandit_boost = bandit_scores.get(opp_id, 0.5) - 0.5  # center at 0
+            b = bandit_scores.get(opp_id, 0.5)
+            bandit_boost = (b - 0.5) * 0.28   # ±0.14 max, visibly shifts ranking
 
-        # Domain preference boost
+        # Domain preference boost (aggregate-level): centered at 0, can go negative
         domain_boost = 0.0
         if domain_prefs:
             domain = row_dict.get("domain", "")
-            domain_boost = domain_prefs.get(domain, 0.0) * 0.15
+            pref = domain_prefs.get(domain, 0.5)  # 0.5 = neutral
+            domain_boost = (pref - 0.5) * 0.30    # ±0.15 max
+            domain_boost = max(-0.15, min(0.20, domain_boost))
 
-        final_score = scores["composite_score"] + 0.1 * bandit_boost + domain_boost
+        final_score = scores["composite_score"] + bandit_boost + domain_boost
         final_score = max(0.0, min(1.0, final_score))
 
         row_dict.update(scores)

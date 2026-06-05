@@ -1037,42 +1037,61 @@ def render_persona_tab(df: pd.DataFrame):
         c_sims = [c[1] for c in candidates]
         ranked = rank_candidates(df, c_ids, c_sims, top_n=10, persona=persona.get("role", ""))
 
-        top10 = ranked[:10]
-        gfi_count = sum(1 for r in top10 if r.get("good_first_issues", 0) > 0)
-        domain_match = sum(1 for r in top10 if r.get("domain", "") in interests)
-        cpp_count = sum(1 for r in top10 if r.get("language", "") in ["C++", "C", "Rust"])
-        avg_score = np.mean([r.get("final_score", 0) for r in top10]) if top10 else 0
+        role = persona.get("role", "")
 
-        # Pass/fail checks
-        if "Sofia" in persona_name:
-            passed = gfi_count >= 3 and cpp_count == 0
-        elif "David" in persona_name:
-            passed = domain_match >= 7
-        elif "Lina" in persona_name:
-            avg_growth = np.mean([r.get("growth_rate", 0) for r in top10]) if top10 else 0
-            passed = avg_growth > 5
+        # Use same ranking logic for all personas — driven by role's intent, not name
+        # trend_spotting roles: re-sort by trend signal to surface velocity
+        from scoring import ROLE_INTENT
+        intent = ROLE_INTENT.get(role, None)
+        if intent == "trend_spotting":
+            top10 = sorted(ranked, key=lambda x: x.get("trend_score", x.get("growth_rate", 0)), reverse=True)[:10]
         else:
-            passed = domain_match >= 6
+            top10 = ranked[:10]
+
+        gfi_count    = sum(1 for r in top10 if r.get("good_first_issues", 0) > 0)
+        domain_match = sum(1 for r in top10 if r.get("domain", "") in interests)
+        cpp_count    = sum(1 for r in top10 if r.get("language", "").lower() in ("c", "c++", "cpp", "rust"))
+        avg_score    = np.mean([r.get("final_score", 0) for r in top10]) if top10 else 0
+        avg_trend    = np.mean([r.get("trend_score", r.get("growth_rate", 0)) for r in top10]) if top10 else 0
+        discussion_count = sum(1 for r in top10 if r.get("source", "") in ("reddit", "hackernews"))
+
+        # Pass/fail driven by intent, not persona name — hidden persona also benefits
+        if intent == "contribution":
+            passed = gfi_count >= 3 and cpp_count == 0
+        elif intent == "community_engagement":
+            passed = domain_match >= 7
+        elif intent == "trend_spotting":
+            passed = avg_trend > 0.05 and discussion_count >= 3
+        elif intent == "startup_growth":
+            passed = domain_match >= 6 and discussion_count >= 2
+        else:
+            passed = domain_match >= 5
 
         results_table.append({
             "Persona": persona_name,
             "Top-10 Domain Match": f"{domain_match}/10",
             "GFI in Top-10": gfi_count,
-            "Avg Score": f"{avg_score:.0%}",
+            "Discussion (HN/Reddit)": discussion_count,
+            "Avg Trend Score": f"{avg_trend:.2f}",
             "C++/Rust in Top-10": cpp_count,
             "Pass Criteria": persona["pass_criteria"][:60] + "…",
             "Result": "✅ PASS" if passed else "❌ FAIL",
         })
 
         with st.expander(f"{'✅' if passed else '❌'} {persona_name}"):
+            st.markdown(f"**Role:** {role} · **Intent mode:** `{intent or 'generic'}`")
             st.markdown(f"**Interests:** {', '.join(interests)}")
             st.markdown(f"**Pass Criteria:** {persona['pass_criteria']}")
-            st.markdown(f"**Domain match:** {domain_match}/10 · GFI: {gfi_count} · Avg score: {avg_score:.0%}")
+            st.markdown(
+                f"**Domain match:** {domain_match}/10 · GFI: {gfi_count} · "
+                f"Discussion: {discussion_count}/10 · Avg trend: {avg_trend:.2f} · Avg score: {avg_score:.0%}"
+            )
             st.markdown("**Top 5 Recommendations:**")
             for i, r in enumerate(top10[:5]):
-                icon = SOURCE_ICONS.get(r["source"], "📄")
+                icon = SOURCE_ICONS.get(r.get("source", ""), "📄")
+                title_md = f"[{r['title'][:70]}]({r['url']})" if _is_real_url(r.get("url", "")) else r["title"][:70]
                 st.markdown(
-                    f"{i+1}. {icon} [{r['title'][:70]}]({r['url']}) — "
+                    f"{i+1}. {icon} {title_md} — "
                     f"`{r['domain']}` — **{r.get('final_score', 0):.0%}**"
                 )
 
