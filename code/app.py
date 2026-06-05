@@ -86,6 +86,8 @@ st.markdown("""
 .badge-gfi { background: #1a7f371a; color: #3fb950; border: 1px solid #238636; }
 h1, h2, h3 { color: #e6edf3 !important; }
 p, li { color: #8b949e; }
+.opp-card a { color: #58a6ff !important; text-decoration: underline !important; }
+.opp-card a:hover { color: #79c0ff !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -361,13 +363,14 @@ def _is_real_url(url: str) -> bool:
     return True
 
 
-def _render_title_link(title: str, url: str, rank: int = None, style: str = "color:#58a6ff;text-decoration:none") -> str:
+def _render_title_link(title: str, url: str, rank: int = None, style: str = "color:#58a6ff;text-decoration:underline") -> str:
     prefix = f"#{rank} &nbsp;" if rank is not None else ""
     safe_title = html.escape(title)
+    full_text = f"{prefix}{safe_title}"
     if _is_real_url(url):
         safe_url = html.escape(url)
-        return f'{prefix}<a href="{safe_url}" target="_blank" style="{style}">{safe_title}</a>'
-    return f'{prefix}<span style="color:#8b949e" title="Demo data — no real URL">{safe_title}</span>'
+        return f'<a href="{safe_url}" target="_blank" style="{style}">{full_text}</a>'
+    return f'<span style="color:#8b949e" title="Demo data — no real URL">{full_text}</span>'
 
 
 def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
@@ -622,7 +625,7 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
         reason = why_now(opp)
         opp_id = opp.get("id", "")
         safe_action = html.escape(best_action[:130])
-        aq_title_html = _render_title_link(title[:80], url, rank=i+1, style="color:#e6edf3;text-decoration:none")
+        aq_title_html = _render_title_link(title[:80], url, rank=i+1, style="color:#58a6ff;text-decoration:underline")
 
         st.markdown(f"""
 <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:10px;display:flex;gap:16px">
