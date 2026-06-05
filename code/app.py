@@ -1050,7 +1050,7 @@ def render_persona_tab(df: pd.DataFrame):
 
         gfi_count    = sum(1 for r in top10 if r.get("good_first_issues", 0) > 0)
         domain_match = sum(1 for r in top10 if r.get("domain", "") in interests)
-        cpp_count    = sum(1 for r in top10 if r.get("language", "").lower() in ("c", "c++", "cpp", "rust"))
+        cpp_count    = sum(1 for r in top10 if (r.get("language") or "").lower() in ("c", "c++", "cpp", "rust"))
         avg_score    = np.mean([r.get("final_score", 0) for r in top10]) if top10 else 0
         avg_trend    = np.mean([r.get("trend_score", r.get("growth_rate", 0)) for r in top10]) if top10 else 0
         discussion_count = sum(1 for r in top10 if r.get("source", "") in ("reddit", "hackernews"))
