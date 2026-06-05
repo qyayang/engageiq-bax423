@@ -132,7 +132,7 @@ def seed_database():
     import db as _db
     _db.init_db()
     # Seed if offline records are below threshold — handles partial/test DB states
-    if _db.get_count_by_datasource("offline") < 5000 and CSV_PATH.exists():
+    if _db.get_count_by_datasource("offline") < 11000 and CSV_PATH.exists():
         df_seed = pd.read_csv(str(CSV_PATH))
         df_seed = _clean_df(df_seed)
         df_seed["data_source"] = "offline"
@@ -420,16 +420,34 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
     best_action = actions[0] if actions else ""
     best_action_short = html.escape(best_action[:120] + "…" if len(best_action) > 120 else best_action)
 
-    title_html = _render_title_link(title, url, rank=rank)
+    # Build title HTML directly — no parent div with conflicting color
+    safe_title = html.escape(title)
+    if _is_real_url(url):
+        safe_url = html.escape(url)
+        title_html = (
+            f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" '
+            f'style="display:block;font-size:16px;font-weight:700;'
+            f'color:#58a6ff;text-decoration:underline;margin-bottom:4px;cursor:pointer">'
+            f'#{rank}&nbsp; {safe_title}</a>'
+        )
+    else:
+        title_html = (
+            f'<span style="display:block;font-size:16px;font-weight:700;'
+            f'color:#8b949e;margin-bottom:4px">#{rank}&nbsp; {safe_title}</span>'
+        )
 
     col_main, col_score = st.columns([5, 1])
     with col_main:
         st.markdown(f"""
+<style>
+  a[data-opp-link] {{
+    color: #58a6ff !important;
+    text-decoration: underline !important;
+  }}
+</style>
 <div class="opp-card">
   <div style="margin-bottom:8px">{badge_html}</div>
-  <div style="font-size:16px;font-weight:600;color:#e6edf3;margin-bottom:4px">
-    {title_html}
-  </div>
+  {title_html}
   <div style="font-size:13px;color:#8b949e;margin-bottom:6px">{desc}</div>
   <div style="font-size:12px;color:#6e7681;margin-bottom:6px">{stats_str}</div>
   <div style="font-size:12px;color:#3fb950;background:#1a7f371a;border-radius:4px;padding:6px 10px;border-left:3px solid #238636">
@@ -625,7 +643,16 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
         reason = why_now(opp)
         opp_id = opp.get("id", "")
         safe_action = html.escape(best_action[:130])
-        aq_title_html = _render_title_link(title[:80], url, rank=i+1, style="color:#58a6ff;text-decoration:underline")
+        safe_aq_title = html.escape(title[:80])
+        if _is_real_url(url):
+            safe_aq_url = html.escape(url)
+            aq_title_html = (
+                f'<a href="{safe_aq_url}" target="_blank" rel="noopener noreferrer" '
+                f'style="color:#58a6ff;text-decoration:underline;font-weight:700;cursor:pointer">'
+                f'#{i+1}&nbsp; {safe_aq_title}</a>'
+            )
+        else:
+            aq_title_html = f'<span style="color:#8b949e;font-weight:700">#{i+1}&nbsp; {safe_aq_title}</span>'
 
         st.markdown(f"""
 <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:10px;display:flex;gap:16px">
@@ -638,7 +665,7 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
       {icon} {source.upper()} &nbsp;·&nbsp; <span style="color:#58a6ff">{html.escape(domain)}</span>
       &nbsp;·&nbsp; ⏱ {time_est}
     </div>
-    <div style="font-size:15px;font-weight:600;color:#e6edf3;margin-bottom:6px">
+    <div style="font-size:15px;margin-bottom:6px">
       {aq_title_html}
     </div>
     <div style="font-size:12px;color:#8b949e;margin-bottom:6px">{reason}</div>
