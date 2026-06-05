@@ -740,13 +740,41 @@ def render_analytics_tab(df: pd.DataFrame):
 
     with tab_d:
         st.markdown("### 🚀 Rising Opportunities (Highest Growth Rate)")
+        st.caption("Ranked by growth signal. Source and engagement stats are shown per platform.")
         rising = compute_rising_opportunities(df, top_n=15)
         for _, row in rising.iterrows():
-            icon = SOURCE_ICONS.get(row.get("source", ""), "📄")
+            source = row.get("source", "")
+            icon = SOURCE_ICONS.get(source, "📄")
+            url = row.get("url", "#")
+            title = row.get("title", "")
+            domain = row.get("domain", "")
+
+            # Source label
+            source_label = {"github": "GitHub", "reddit": "Reddit", "hackernews": "Hacker News"}.get(source, source.upper())
+
+            # Per-source stats
+            if source == "github":
+                stats = f"🔥 +{row.get('growth_rate', 0):.0f} stars/wk · ⭐ {int(row.get('stars', 0)):,} stars"
+                title_link = f"[{title}]({url})" if _is_real_url(url) else title
+                extra = ""
+            elif source == "reddit":
+                stats = f"⬆️ {int(row.get('upvotes', 0)):,} upvotes · 💬 {int(row.get('comments', 0)):,} comments"
+                title_link = f"[{title}]({url})" if _is_real_url(url) else title
+                extra = ""
+            elif source == "hackernews":
+                stats = f"🔥 {int(row.get('growth_rate', 0)):,} trend score · 💬 {int(row.get('comments', 0)):,} comments"
+                title_link = f"[{title}]({url})" if _is_real_url(url) else title
+                # If url is external article, note it came from HN; if it IS the HN link, no need for extra
+                is_hn_url = "news.ycombinator.com" in url
+                extra = "" if is_hn_url else " · *(via Hacker News)*"
+            else:
+                stats = f"🔥 +{row.get('growth_rate', 0):.0f} growth"
+                title_link = f"[{title}]({url})" if _is_real_url(url) else title
+                extra = ""
+
             st.markdown(
-                f"**{icon} [{row['title']}]({row['url']})** — "
-                f"`{row['domain']}` — 🔥 +{row['growth_rate']:.0f} stars/wk — "
-                f"⭐ {row['stars']:,}"
+                f"**{icon} {source_label}** · **{title_link}** · "
+                f"`{domain}` · {stats}{extra}"
             )
 
 
