@@ -58,10 +58,6 @@ def compute_community_health(row: dict) -> float:
         issues  = _safe_log_norm(row.get("open_issues", 0), 500)
         growth  = _safe_log_norm(row.get("growth_rate", 0), 200)
         return round(0.40 * contrib + 0.30 * issues + 0.30 * growth, 4)
-    elif source == "reddit":
-        comments = _safe_log_norm(row.get("comments", 0), 300)
-        upvotes  = _safe_log_norm(row.get("upvotes", 0), 5000)
-        return round(0.50 * comments + 0.50 * upvotes, 4)
     elif source == "hackernews":
         comments = _safe_log_norm(row.get("comments", 0), 200)
         upvotes  = _safe_log_norm(row.get("upvotes", 0), 1000)
@@ -97,11 +93,11 @@ def compute_effort_score(row: dict) -> float:
 
 
 def compute_trend_score(row: dict) -> float:
-    """Recency + velocity signal. Weighted for HN/Reddit sources."""
+    """Recency + velocity signal. Weighted for HN sources."""
     growth   = _safe_log_norm(row.get("growth_rate", 0) or 0, 200)
     upvotes  = _safe_log_norm(row.get("upvotes", 0) or 0, 5000)
     comments = _safe_log_norm(row.get("comments", 0) or 0, 500)
-    if (row.get("source") or "") in ("hackernews", "reddit"):
+    if (row.get("source") or "") == "hackernews":
         return round(0.35 * growth + 0.38 * upvotes + 0.27 * comments, 4)
     else:
         return round(0.70 * growth + 0.20 * upvotes + 0.10 * comments, 4)
@@ -133,10 +129,10 @@ def _intent_bonus(row: dict, intent: str | None) -> float:
             bonus -= 0.12
 
     elif intent == "trend_spotting":
-        # Boost: velocity, HN/Reddit discussion
+        # Boost: velocity, HN discussion
         growth = row.get("growth_rate", 0)
         bonus += min(growth / 130, 0.20)   # up to +0.20 for high-growth
-        if source in ("hackernews", "reddit"):
+        if source == "hackernews":
             bonus += 0.10
         bonus += min(row.get("upvotes", 0) / 5000, 0.06)
 
@@ -151,8 +147,8 @@ def _intent_bonus(row: dict, intent: str | None) -> float:
             bonus  += 0.06 * gap  # niche/underserved projects
 
     elif intent == "startup_growth":
-        # Boost: API/CLI/tool keywords, SaaS domains, Reddit/HN discussion
-        if source in ("reddit", "hackernews"):
+        # Boost: API/CLI/tool keywords, SaaS domains, HN discussion
+        if source == "hackernews":
             bonus += 0.08
         text = (row.get("title", "") + " " + row.get("description", "")).lower()
         if any(kw in text for kw in ("api", "cli", "sdk", "saas", "productivity", "tool", "platform")):
@@ -224,12 +220,6 @@ def build_score_explanation(row: dict, scores: dict) -> str:
             parts.append(f"**Effort:** Moderate — mid-size project")
         else:
             parts.append(f"**Effort:** Higher — large, active codebase")
-    elif source == "reddit":
-        comments= row.get("comments", 0)
-        upvotes = row.get("upvotes", 0)
-        parts.append(f"**Thread activity:** {comments} comments, {upvotes} upvotes — {comm:.0%} community health")
-        parts.append(f"**Visibility:** Your comment reaches {vis:.0%} of potential audience")
-        parts.append(f"**Trend score:** {trend:.0%} — velocity signal")
     else:
         comments= row.get("comments", 0)
         score   = row.get("upvotes", 0)
@@ -271,19 +261,6 @@ def suggest_actions(row: dict, persona: str = "") -> list[str]:
             actions.append("Check whether the repo exposes an API, plugin, or integration surface before reaching out about partnership.")
         else:
             actions.append(f"Use the repo as a concrete {domain} example: note one design choice worth reusing or questioning.")
-
-    elif source == "reddit":
-        if any(kw in text for kw in ("help", "how do i", "what should", "recommend", "advice")):
-            actions.append(f"Reply with one concrete {domain} example and a tradeoff; avoid a list of generic tools.")
-        elif intent == "startup_growth":
-            actions.append("Answer the thread first, then mention your product only if it directly solves the stated problem and disclose your connection.")
-        elif intent == "trend_spotting":
-            actions.append("Save the thread as a trend lead and compare the comments against two similar discussions before writing it up.")
-        else:
-            actions.append(f"Add a short comment with a specific lesson learned from {domain}, then ask one follow-up question.")
-
-        actions.append("Engage with the most technical reply in the thread; that is usually where a useful conversation starts.")
-        actions.append("If you link anything, use one supporting repo, benchmark, or write-up rather than a promotional link dump.")
 
     else:
         if intent == "trend_spotting":

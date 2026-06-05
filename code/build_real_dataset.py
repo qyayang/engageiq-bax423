@@ -1,6 +1,6 @@
 """
 Real API data collector — replaces synthetic offline snapshot with actual scraped data.
-Sources: GitHub REST API, GH Archive, Reddit public JSON, Hacker News Firebase API.
+Sources: GitHub REST API, GH Archive, Hacker News Firebase API.
 Run: python build_real_dataset.py
 """
 import gzip
@@ -15,11 +15,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import requests
-import praw
-
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
-REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 OUT_CSV = DATA_DIR / "opportunities.csv"
@@ -50,24 +46,6 @@ DOMAIN_QUERIES = {
     "Cloud APIs":                "aws gcp azure serverless cloud-native terraform",
     "Mobile Dev (iOS/Flutter)":  "flutter ios swift swiftui mobile app",
     "Beginner Coding":           "good-first-issue beginner tutorial learn-to-code",
-}
-
-DOMAIN_SUBREDDITS = {
-    "Machine Learning":          ["MachineLearning", "learnmachinelearning"],
-    "DevOps/K8s":                ["devops", "kubernetes"],
-    "Trending Open-Source":      ["opensource", "programming"],
-    "Developer Tools":           ["webdev", "programming"],
-    "Cybersecurity":             ["netsec", "cybersecurity"],
-    "Frontend (React/Web)":      ["reactjs", "webdev"],
-    "B2B SaaS":                  ["SaaS", "startups"],
-    "Blockchain":                ["ethereum", "defi"],
-    "Python Data Eng":           ["dataengineering", "Python"],
-    "GameDev (C++)":             ["gamedev", "cpp"],
-    "AI Research":               ["MachineLearning", "LocalLLaMA"],
-    "Embedded Systems (C/RTOS)": ["embedded", "RTOS"],
-    "Cloud APIs":                ["aws", "googlecloud"],
-    "Mobile Dev (iOS/Flutter)":  ["FlutterDev", "iOSProgramming"],
-    "Beginner Coding":           ["learnprogramming", "learnpython"],
 }
 
 DOMAINS = list(DOMAIN_QUERIES.keys())
@@ -187,57 +165,6 @@ def fetch_github_issues_real(domain: str, pages: int = 2) -> list[dict]:
             print(f"  GitHub issues error ({domain} p{page}): {e}")
             break
     return records
-
-
-# ── Reddit ────────────────────────────────────────────────────────────────────
-def _get_reddit() -> praw.Reddit | None:
-    if not REDDIT_CLIENT_ID or not REDDIT_CLIENT_SECRET:
-        return None
-    return praw.Reddit(
-        client_id=REDDIT_CLIENT_ID,
-        client_secret=REDDIT_CLIENT_SECRET,
-        user_agent="EngageIQ/1.0 BAX423 (by /u/engageiq_bot)",
-    )
-
-
-def fetch_reddit_real(domain: str, n: int = 50) -> list[dict]:
-    reddit = _get_reddit()
-    if reddit is None:
-        print(f"  Reddit skipped — REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET not set")
-        return []
-
-    subs = DOMAIN_SUBREDDITS.get(domain, ["programming"])
-    records = []
-    for sub in subs:
-        for sort in ["hot", "top"]:
-            try:
-                subreddit = reddit.subreddit(sub)
-                posts = list(subreddit.hot(limit=50) if sort == "hot" else subreddit.top("week", limit=50))
-                for post in posts:
-                    if post.stickied or not post.title:
-                        continue
-                    score = post.score
-                    n_comments = post.num_comments
-                    created = datetime.fromtimestamp(post.created_utc).strftime("%Y-%m-%d %H:%M:%S")
-                    records.append({
-                        "id": _id("reddit", post.id),
-                        "source": "reddit", "record_type": "reddit_post", "data_source": "live",
-                        "title": post.title,
-                        "description": f"r/{sub} [{sort}] — {n_comments} comments, {score} upvotes. {(post.selftext or '')[:200]}",
-                        "url": f"https://reddit.com{post.permalink}",
-                        "domain": domain, "language": "",
-                        "tags": json.dumps([sub]),
-                        "stars": 0, "forks": 0, "contributors": 0,
-                        "open_issues": 0, "good_first_issues": 0,
-                        "comments": n_comments, "upvotes": score,
-                        "activity_score": activity_score(0, 0, 0, n_comments, score / 100),
-                        "growth_rate": round(score / 100, 2),
-                        "created_at": created, "updated_at": _now(),
-                    })
-                time.sleep(0.5)
-            except Exception as e:
-                print(f"  Reddit error (r/{sub} {sort}): {e}")
-    return records[:n]
 
 
 # ── Hacker News ───────────────────────────────────────────────────────────────
@@ -410,18 +337,8 @@ def main():
         add(recs)
         print(f"  {domain}: {len(recs)} issues")
 
-    # 3. Reddit (requires OAuth2 credentials)
-    print("\n[3/4] Reddit...")
-    if REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET:
-        for domain in DOMAINS:
-            recs = fetch_reddit_real(domain, n=50)
-            add(recs)
-            print(f"  {domain}: {len(recs)} posts")
-    else:
-        print("  Skipped — Reddit API requires OAuth2. Set REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET to enable.")
-
-    # 4. Hacker News (real Firebase API)
-    print("\n[4/4] Hacker News (real Firebase API)...")
+    # 3. Hacker News (real Firebase API)
+    print("\n[3/3] Hacker News (real Firebase API)...")
     for domain in DOMAINS:
         recs = fetch_hn_real(domain, n=50)
         add(recs)

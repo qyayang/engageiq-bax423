@@ -15,7 +15,6 @@ def compute_domain_stats(df: pd.DataFrame) -> pd.DataFrame:
         avg_activity=("activity_score", "mean"),
         avg_growth=("growth_rate", "mean"),
         github_count=("source", lambda x: (x == "github").sum()),
-        reddit_count=("source", lambda x: (x == "reddit").sum()),
         hn_count=("source", lambda x: (x == "hackernews").sum()),
         total_gfi=("good_first_issues", "sum"),
     ).reset_index()

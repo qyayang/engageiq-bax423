@@ -81,7 +81,6 @@ st.markdown("""
     margin-right: 4px;
 }
 .badge-github { background: #21262d; color: #58a6ff; border: 1px solid #30363d; }
-.badge-reddit { background: #ff45001a; color: #ff6314; border: 1px solid #ff6314; }
 .badge-hn { background: #ff66001a; color: #ff9500; border: 1px solid #ff9500; }
 .badge-domain { background: #1f6feb1a; color: #58a6ff; border: 1px solid #1f6feb; }
 .badge-gfi { background: #1a7f371a; color: #3fb950; border: 1px solid #238636; }
@@ -96,8 +95,8 @@ DOMAINS = [
     "Python Data Eng", "GameDev (C++)", "AI Research", "Embedded Systems (C/RTOS)",
     "Cloud APIs", "Mobile Dev (iOS/Flutter)", "Beginner Coding",
 ]
-SOURCE_ICONS = {"github": "🐙", "reddit": "🤖", "hackernews": "🟠"}
-SOURCE_COLORS = {"github": "#58a6ff", "reddit": "#ff6314", "hackernews": "#ff9500"}
+SOURCE_ICONS = {"github": "🐙", "hackernews": "🟠"}
+SOURCE_COLORS = {"github": "#58a6ff", "hackernews": "#ff9500"}
 
 
 # ── data loading ────────────────────────────────────────────────────────────
@@ -112,7 +111,6 @@ def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
     if "record_type" not in df.columns:
         df["record_type"] = df.apply(
             lambda r: "issue" if "[Issue]" in str(r["title"])
-            else "reddit_post" if r["source"] == "reddit"
             else "hn_story" if r["source"] == "hackernews"
             else "repo",
             axis=1,
@@ -262,7 +260,7 @@ def render_sidebar(df: pd.DataFrame):
 
     st.sidebar.divider()
     st.sidebar.markdown("### 🔍 Filters")
-    source_filter = st.sidebar.selectbox("Source", ["All", "GitHub", "Reddit", "Hacker News"])
+    source_filter = st.sidebar.selectbox("Source", ["All", "GitHub", "Hacker News"])
     domain_filter = st.sidebar.selectbox("Domain", ["All"] + DOMAINS)
     gfi_only = st.sidebar.checkbox("GitHub: Good First Issues only")
     sort_mode = st.sidebar.radio("Sort by", ["Relevance", "Trending", "Community Health"])
@@ -278,12 +276,11 @@ def render_sidebar(df: pd.DataFrame):
     )
     if st.sidebar.button("🔄 Fetch Live Updates", use_container_width=True):
         with st.sidebar.spinner("Fetching from APIs…"):
-            from data_collector import fetch_hn_stories, fetch_reddit_posts, fetch_github_issues
+            from data_collector import fetch_hn_stories, fetch_github_issues
             interests_now = st.session_state.profile.get("interests", DOMAINS[:3])
             new_records = []
             for domain in interests_now[:3]:
                 new_records += fetch_hn_stories(domain, n=3)
-                new_records += fetch_reddit_posts(domain, n=3)
                 new_records += fetch_github_issues(domain, per_page=5)  # real GFI issues
             added = 0
             live_to_persist = []
@@ -545,8 +542,7 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
     domain_prefs = bandit.get_domain_preferences()
 
     # Stage 2+3: Score + re-rank
-    source_map = {"All": "All", "github": "GitHub", "reddit": "Reddit",
-                  "hackernews": "Hacker News", "hackernews": "hackernews"}
+    source_map = {"All": "All", "github": "GitHub", "hackernews": "Hacker News"}
     raw_source = filters.get("source", "All")
     ranked = rank_candidates(
         df=df,
@@ -593,7 +589,7 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
             return f"🔥 Growing fast (+{growth:.0f}/wk) — engage before it goes mainstream"
         if gfi > 0:
             return f"✨ {gfi} beginner issue(s) open — low competition right now"
-        if comments < 10 and opp.get("source") in ("reddit", "hackernews"):
+        if comments < 10 and opp.get("source") == "hackernews":
             return "💬 Early thread — your comment gets top visibility"
         return "⭐ Highly relevant to your profile based on embedding match"
 
@@ -714,7 +710,7 @@ def render_analytics_tab(df: pd.DataFrame):
                 df.groupby("source").size().reset_index(name="count"),
                 values="count", names="source",
                 title="Source Distribution",
-                color_discrete_map={"github": "#58a6ff", "reddit": "#ff6314", "hackernews": "#ff9500"},
+                color_discrete_map={"github": "#58a6ff", "hackernews": "#ff9500"},
                 template="plotly_dark",
             )
             st.plotly_chart(fig2, use_container_width=True)
@@ -788,15 +784,11 @@ def render_analytics_tab(df: pd.DataFrame):
             domain = row.get("domain", "")
 
             # Source label
-            source_label = {"github": "GitHub", "reddit": "Reddit", "hackernews": "Hacker News"}.get(source, source.upper())
+            source_label = {"github": "GitHub", "hackernews": "Hacker News"}.get(source, source.upper())
 
             # Per-source stats
             if source == "github":
                 stats = f"🔥 +{row.get('growth_rate', 0):.0f} stars/wk · ⭐ {int(row.get('stars', 0)):,} stars"
-                title_link = f"[{title}]({url})" if _is_real_url(url) else title
-                extra = ""
-            elif source == "reddit":
-                stats = f"⬆️ {int(row.get('upvotes', 0)):,} upvotes · 💬 {int(row.get('comments', 0)):,} comments"
                 title_link = f"[{title}]({url})" if _is_real_url(url) else title
                 extra = ""
             elif source == "hackernews":
@@ -1101,11 +1093,11 @@ def render_persona_tab(df: pd.DataFrame):
 
             elif intent == "trend_spotting":
                 s += 0.45 * float(row.get("trend_score", 0))
-                if source in ("reddit", "hackernews"):
+                if source == "hackernews":
                     s += 0.12
 
             elif intent == "startup_growth":
-                if source in ("reddit", "hackernews"):
+                if source == "hackernews":
                     s += 0.22
                 if any(kw in text for kw in ("api", "cli", "sdk", "saas", "startup", "product", "developer tool", "platform")):
                     s += 0.14
@@ -1137,7 +1129,7 @@ def render_persona_tab(df: pd.DataFrame):
         cpp_count    = sum(1 for r in top10 if (r.get("language") or "").lower() in ("c", "c++", "cpp", "rust"))
         avg_score    = np.mean([r.get("final_score", 0) for r in top10]) if top10 else 0
         avg_trend    = np.mean([r.get("trend_score", r.get("growth_rate", 0)) for r in top10]) if top10 else 0
-        discussion_count = sum(1 for r in top10 if r.get("source", "") in ("reddit", "hackernews"))
+        discussion_count = sum(1 for r in top10 if r.get("source", "") == "hackernews")
 
         # Pass/fail driven by intent, not persona name — hidden persona also benefits
         if intent == "contribution":
@@ -1145,9 +1137,9 @@ def render_persona_tab(df: pd.DataFrame):
         elif intent == "community_engagement":
             passed = domain_match >= 7
         elif intent == "trend_spotting":
-            passed = avg_trend > 0.05 and discussion_count >= 3
+            passed = avg_trend > 0.05 and discussion_count >= 1
         elif intent == "startup_growth":
-            passed = domain_match >= 6 and discussion_count >= 2
+            passed = domain_match >= 6 and discussion_count >= 1
         else:
             passed = domain_match >= 5
 
@@ -1155,7 +1147,7 @@ def render_persona_tab(df: pd.DataFrame):
             "Persona": persona_name,
             "Top-10 Domain Match": f"{domain_match}/10",
             "GFI in Top-10": gfi_count,
-            "Discussion (HN/Reddit)": discussion_count,
+            "Discussion (HN)": discussion_count,
             "Avg Trend Score": f"{avg_trend:.2f}",
             "C++/Rust in Top-10": cpp_count,
             "Pass Criteria": persona["pass_criteria"][:60] + "…",
@@ -1168,7 +1160,7 @@ def render_persona_tab(df: pd.DataFrame):
             st.markdown(f"**Pass Criteria:** {persona['pass_criteria']}")
             st.markdown(
                 f"**Domain match:** {domain_match}/10 · GFI: {gfi_count} · "
-                f"Discussion: {discussion_count}/10 · Avg trend: {avg_trend:.2f} · Avg score: {avg_score:.0%}"
+                f"HN Discussion: {discussion_count}/10 · Avg trend: {avg_trend:.2f} · Avg score: {avg_score:.0%}"
             )
             st.markdown("**Top 5 Recommendations:**")
             for i, r in enumerate(top10[:5]):

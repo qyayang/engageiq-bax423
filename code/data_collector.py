@@ -1,6 +1,6 @@
 """
 Live API data collectors.
-Fetches fresh opportunities from GitHub REST API v3, Reddit (PRAW), and Hacker News.
+Fetches fresh opportunities from GitHub REST API v3 and Hacker News.
 Deduplicates against the Bloom filter before inserting into the database.
 """
 import hashlib
@@ -17,9 +17,6 @@ import requests
 from bloom_filter import BloomFilter
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
-REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")
-REDDIT_USER_AGENT = "EngageIQ/1.0"
 
 _HEADERS_GH = {
     "Accept": "application/vnd.github+json",
@@ -46,25 +43,6 @@ DOMAIN_QUERIES = {
     "Mobile Dev (iOS/Flutter)": "flutter ios swift mobile",
     "Beginner Coding": "good-first-issues beginner tutorial",
 }
-
-DOMAIN_SUBREDDITS = {
-    "Machine Learning": ["MachineLearning", "learnmachinelearning"],
-    "DevOps/K8s": ["devops", "kubernetes"],
-    "Trending Open-Source": ["opensource", "programming"],
-    "Developer Tools": ["programming", "webdev"],
-    "Cybersecurity": ["netsec", "cybersecurity"],
-    "Frontend (React/Web)": ["reactjs", "webdev"],
-    "B2B SaaS": ["SaaS", "startups"],
-    "Blockchain": ["ethereum", "defi"],
-    "Python Data Eng": ["dataengineering", "Python"],
-    "GameDev (C++)": ["gamedev", "cpp"],
-    "AI Research": ["MachineLearning", "artificial"],
-    "Embedded Systems (C/RTOS)": ["embedded", "RTOS"],
-    "Cloud APIs": ["aws", "googlecloud"],
-    "Mobile Dev (iOS/Flutter)": ["FlutterDev", "iOSProgramming"],
-    "Beginner Coding": ["learnprogramming", "learnpython"],
-}
-
 
 def _make_id(source: str, raw_id: str) -> str:
     return hashlib.md5(f"{source}:{raw_id}".encode()).hexdigest()[:16]
@@ -223,57 +201,6 @@ def fetch_hn_stories(domain: str, n: int = 20) -> list[dict]:
     return records
 
 
-def fetch_reddit_posts(domain: str, n: int = 20) -> list[dict]:
-    """Fetches Reddit posts via the public JSON API (no auth required for public subreddits)."""
-    subreddits = DOMAIN_SUBREDDITS.get(domain, ["programming"])
-    records = []
-    for sub in subreddits[:2]:
-        if len(records) >= n:
-            break
-        try:
-            url = f"https://www.reddit.com/r/{sub}/hot.json?limit={n}"
-            resp = requests.get(
-                url,
-                headers={"User-Agent": REDDIT_USER_AGENT},
-                timeout=8,
-            )
-            resp.raise_for_status()
-            posts = resp.json().get("data", {}).get("children", [])
-        except Exception:
-            continue
-
-        for post in posts:
-            data = post.get("data", {})
-            if data.get("stickied"):
-                continue
-            score = data.get("score", 0)
-            n_comments = data.get("num_comments", 0)
-            record = {
-                "id": _make_id("reddit", data.get("id", "")),
-                "source": "reddit",
-                "record_type": "reddit_post",
-                "title": data.get("title", ""),
-                "description": (data.get("selftext") or "")[:300] or f"Reddit r/{sub}: {data.get('title', '')}",
-                "url": f"https://reddit.com{data.get('permalink', '')}",
-                "domain": domain,
-                "language": "",
-                "tags": json.dumps([sub]),
-                "stars": 0,
-                "forks": 0,
-                "contributors": 0,
-                "open_issues": 0,
-                "good_first_issues": 0,
-                "comments": n_comments,
-                "upvotes": score,
-                "activity_score": round(min((score + n_comments * 5) / 10000, 1.0), 4),
-                "growth_rate": round(score / 100, 2),
-                "created_at": datetime.fromtimestamp(data.get("created_utc", 0)).strftime("%Y-%m-%d %H:%M:%S"),
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-            records.append(record)
-    return records
-
-
 class StreamingIngester:
     """
     Simulated streaming ingester — producer/consumer pattern.
@@ -319,7 +246,6 @@ class StreamingIngester:
                     break
                 new_records = (
                     fetch_hn_stories(domain, n=5)
-                    + fetch_reddit_posts(domain, n=5)
                     + fetch_github_issues(domain, per_page=5)
                 )
                 for record in new_records:
