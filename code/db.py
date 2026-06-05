@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 
 _HERE = Path(__file__).parent
-DB_PATH = _HERE.parent / "data" / "engageiq.db"
+_TMP = Path("/tmp/engageiq")
+_TMP.mkdir(parents=True, exist_ok=True)
+DB_PATH = _TMP / "engageiq.db"
 CSV_PATH = _HERE.parent / "data" / "opportunities.csv"
 
 

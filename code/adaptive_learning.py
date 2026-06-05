@@ -16,7 +16,9 @@ from typing import Optional
 import numpy as np
 
 _HERE = Path(__file__).parent
-STATE_FILE = _HERE.parent / "data" / "bandit_state.json"
+_TMP = Path("/tmp/engageiq")
+_TMP.mkdir(parents=True, exist_ok=True)
+STATE_FILE = _TMP / "bandit_state.json"
 
 
 @dataclass

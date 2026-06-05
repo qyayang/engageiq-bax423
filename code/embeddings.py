@@ -16,8 +16,14 @@ from sentence_transformers import SentenceTransformer
 MODEL_NAME = "all-MiniLM-L6-v2"
 EMB_DIM = 384
 _HERE = Path(__file__).resolve().parent
-EMB_CACHE = _HERE.parent / "data" / "embeddings.npy"
-ID_CACHE = _HERE.parent / "data" / "embedding_ids.npy"
+_DATA_DIR = _HERE.parent / "data"
+_TMP = Path("/tmp/engageiq")
+_TMP.mkdir(parents=True, exist_ok=True)
+# Read from data/ (git), fall back to /tmp for new writes
+EMB_CACHE = _DATA_DIR / "embeddings.npy"
+ID_CACHE = _DATA_DIR / "embedding_ids.npy"
+EMB_CACHE_TMP = _TMP / "embeddings.npy"
+ID_CACHE_TMP = _TMP / "embedding_ids.npy"
 
 
 @st.cache_resource(show_spinner="Loading embedding model…")
@@ -86,14 +92,15 @@ def retrieve_top_k(
 
 def load_or_compute_embeddings(df) -> tuple[np.ndarray, list[str]]:
     """Load cached embeddings or compute and cache them."""
-    if EMB_CACHE.exists() and ID_CACHE.exists():
-        try:
-            embs = np.load(str(EMB_CACHE))
-            ids = list(np.load(str(ID_CACHE), allow_pickle=True))
-            if len(embs) == len(df):
-                return embs, ids
-        except Exception:
-            pass
+    for emb_path, id_path in [(EMB_CACHE, ID_CACHE), (EMB_CACHE_TMP, ID_CACHE_TMP)]:
+        if emb_path.exists() and id_path.exists():
+            try:
+                embs = np.load(str(emb_path))
+                ids = list(np.load(str(id_path), allow_pickle=True))
+                if len(embs) == len(df):
+                    return embs, ids
+            except Exception:
+                pass
 
     texts = (df["title"].fillna("") + " " + df["description"].fillna("")).tolist()
     ids = df["id"].tolist()
@@ -101,6 +108,10 @@ def load_or_compute_embeddings(df) -> tuple[np.ndarray, list[str]]:
     with st.spinner(f"Computing embeddings for {len(texts):,} opportunities…"):
         embs = embed_texts(texts)
 
-    np.save(str(EMB_CACHE), embs)
-    np.save(str(ID_CACHE), np.array(ids))
+    try:
+        np.save(str(EMB_CACHE), embs)
+        np.save(str(ID_CACHE), np.array(ids))
+    except OSError:
+        np.save(str(EMB_CACHE_TMP), embs)
+        np.save(str(ID_CACHE_TMP), np.array(ids))
     return embs, ids
