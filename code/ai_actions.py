@@ -14,6 +14,18 @@ import requests
 
 _TIMEOUT = 10  # seconds per API call
 
+
+def _secret(key: str, default: str = "") -> str:
+    """Read from os.getenv first, then st.secrets (Streamlit Cloud)."""
+    val = os.getenv(key, "")
+    if val:
+        return val
+    try:
+        import streamlit as st
+        return str(st.secrets.get(key, default))
+    except Exception:
+        return default
+
 _PROMPT_TEMPLATE = """You are a developer engagement advisor.
 Given this opportunity, generate exactly 3 specific, actionable engagement suggestions for the user.
 
@@ -63,14 +75,14 @@ def _parse_actions(text: str, fallback: list[str]) -> list[str]:
 # ── Provider adapters ─────────────────────────────────────────────────────────
 
 def _openai_actions(prompt: str, fallback: list[str]) -> list[str]:
-    key = os.getenv("OPENAI_API_KEY", "")
+    key = _secret("OPENAI_API_KEY")
     if not key:
         return fallback
     resp = requests.post(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         json={
-            "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            "model": _secret("OPENAI_MODEL", "gpt-4o-mini"),
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 300,
             "temperature": 0.4,
@@ -83,7 +95,7 @@ def _openai_actions(prompt: str, fallback: list[str]) -> list[str]:
 
 
 def _anthropic_actions(prompt: str, fallback: list[str]) -> list[str]:
-    key = os.getenv("ANTHROPIC_API_KEY", "")
+    key = _secret("ANTHROPIC_API_KEY")
     if not key:
         return fallback
     resp = requests.post(
@@ -94,7 +106,7 @@ def _anthropic_actions(prompt: str, fallback: list[str]) -> list[str]:
             "Content-Type": "application/json",
         },
         json={
-            "model": os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
+            "model": _secret("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
             "max_tokens": 300,
             "messages": [{"role": "user", "content": prompt}],
         },
@@ -106,10 +118,10 @@ def _anthropic_actions(prompt: str, fallback: list[str]) -> list[str]:
 
 
 def _gemini_actions(prompt: str, fallback: list[str]) -> list[str]:
-    key = os.getenv("GEMINI_API_KEY", "")
+    key = _secret("GEMINI_API_KEY")
     if not key:
         return fallback
-    model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    model = _secret("GEMINI_MODEL", "gemini-1.5-flash")
     resp = requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         params={"key": key},
@@ -122,14 +134,14 @@ def _gemini_actions(prompt: str, fallback: list[str]) -> list[str]:
 
 
 def _deepseek_actions(prompt: str, fallback: list[str]) -> list[str]:
-    key = os.getenv("DEEPSEEK_API_KEY", "")
+    key = _secret("DEEPSEEK_API_KEY")
     if not key:
         return fallback
     resp = requests.post(
         "https://api.deepseek.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         json={
-            "model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            "model": _secret("DEEPSEEK_MODEL", "deepseek-chat"),
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 300,
             "temperature": 0.4,
@@ -142,8 +154,8 @@ def _deepseek_actions(prompt: str, fallback: list[str]) -> list[str]:
 
 
 def _ollama_actions(prompt: str, fallback: list[str]) -> list[str]:
-    model = os.getenv("OLLAMA_MODEL", "llama3.1")
-    host  = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    model = _secret("OLLAMA_MODEL", "llama3.1")
+    host  = _secret("OLLAMA_HOST", "http://localhost:11434")
     resp = requests.post(
         f"{host}/api/chat",
         json={
@@ -174,7 +186,7 @@ def generate_ai_actions(opp: dict, persona: str, fallback_actions: list[str]) ->
     Returns LLM-generated actions if a provider is configured, else rule-based fallback.
     Never raises — any error silently returns the fallback.
     """
-    provider = os.getenv("LLM_PROVIDER", "").lower().strip()
+    provider = _secret("LLM_PROVIDER", "").lower().strip()
     if not provider or provider not in _PROVIDERS:
         return fallback_actions
 
