@@ -212,6 +212,7 @@ def _init_state():
             "time_budget": 5,
         },
         "feedback_log": [],
+        "saved_list": [],
         "live_records": [],
         "ingester_running": False,
         "refresh_key": 0,
@@ -310,6 +311,7 @@ def render_sidebar(df: pd.DataFrame):
     st.sidebar.metric("Live Fetched", f"{live_count:,}")
     st.sidebar.metric("Domains Monitored", f"{df['domain'].nunique()}")
     st.sidebar.metric("Feedback Given", f"{len(st.session_state.feedback_log)}")
+    st.sidebar.metric("Saved", f"{len(st.session_state.saved_list)}")
 
     return {
         "source": source_filter.lower().replace(" ", "") if source_filter != "All" else "All",
@@ -484,30 +486,35 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
         with fb_col1:
             if st.button(f"✅ Engage", key=f"engage_{opp_id}"):
                 bandit.update(opp_id, "engage", domain)
-                bandit.save()  # persist after every action
+                bandit.save()
                 st.session_state.feedback_log.append(
                     {"id": opp_id, "title": title[:50], "feedback": "engage",
                      "domain": domain, "ts": datetime.now().isoformat()}
                 )
-                st.success("Marked as Engage! Bandit updated ✓")
+                st.success("Engage! Learning signal recorded ✓")
         with fb_col2:
-            if st.button(f"⏭️ Skip", key=f"skip_{opp_id}"):
+            if st.button(f"⏭️ Not Relevant", key=f"skip_{opp_id}"):
                 bandit.update(opp_id, "skip", domain)
                 bandit.save()
                 st.session_state.feedback_log.append(
                     {"id": opp_id, "title": title[:50], "feedback": "skip",
                      "domain": domain, "ts": datetime.now().isoformat()}
                 )
-                st.info("Skipped. Bandit updated ✓")
+                st.info("Not Relevant — similar content ranked lower ✓")
         with fb_col3:
-            if st.button(f"🔖 Bookmark", key=f"bm_{opp_id}"):
-                bandit.update(opp_id, "bookmark", domain)
-                bandit.save()
+            if st.button(f"🔖 Save", key=f"bm_{opp_id}"):
                 st.session_state.feedback_log.append(
                     {"id": opp_id, "title": title[:50], "feedback": "bookmark",
                      "domain": domain, "ts": datetime.now().isoformat()}
                 )
-                st.success("Bookmarked! Bandit updated ✓")
+                if not any(s["id"] == opp_id for s in st.session_state.saved_list):
+                    st.session_state.saved_list.append({
+                        "id": opp_id, "title": title, "domain": domain,
+                        "url": opp.get("url", ""), "source": opp.get("source", ""),
+                        "score": opp.get("final_score", 0),
+                        "ts": datetime.now().isoformat(),
+                    })
+                st.success("Saved to 🔖 Saved Opportunities ✓")
 
 
 # ── tab: opportunities ────────────────────────────────────────────────────────
@@ -641,29 +648,34 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
 
         aq_col1, aq_col2, aq_col3 = st.columns([1, 1, 1])
         with aq_col1:
-            if st.button("✅ Done / Engage", key=f"aq_engage_{opp_id}"):
+            if st.button("✅ Engage", key=f"aq_engage_{opp_id}"):
                 bandit.update(opp_id, "engage", domain)
                 bandit.save()
                 st.session_state.feedback_log.append(
                     {"id": opp_id, "title": title[:50], "feedback": "engage",
                      "domain": domain, "ts": datetime.now().isoformat()})
-                st.success("Logged! Bandit updated ✓")
+                st.success("Engage! Learning signal recorded ✓")
         with aq_col2:
-            if st.button("⏭️ Skip", key=f"aq_skip_{opp_id}"):
+            if st.button("⏭️ Not Relevant", key=f"aq_skip_{opp_id}"):
                 bandit.update(opp_id, "skip", domain)
                 bandit.save()
                 st.session_state.feedback_log.append(
                     {"id": opp_id, "title": title[:50], "feedback": "skip",
                      "domain": domain, "ts": datetime.now().isoformat()})
-                st.info("Skipped ✓")
+                st.info("Not Relevant — similar content ranked lower ✓")
         with aq_col3:
             if st.button("🔖 Save", key=f"aq_bm_{opp_id}"):
-                bandit.update(opp_id, "bookmark", domain)
-                bandit.save()
                 st.session_state.feedback_log.append(
                     {"id": opp_id, "title": title[:50], "feedback": "bookmark",
                      "domain": domain, "ts": datetime.now().isoformat()})
-                st.success("Saved ✓")
+                if not any(s["id"] == opp_id for s in st.session_state.saved_list):
+                    st.session_state.saved_list.append({
+                        "id": opp_id, "title": title, "domain": domain,
+                        "url": opp.get("url", ""), "source": opp.get("source", ""),
+                        "score": opp.get("final_score", 0),
+                        "ts": datetime.now().isoformat(),
+                    })
+                st.success("Saved to 🔖 Saved Opportunities ✓")
 
     st.markdown("---")
 
@@ -842,18 +854,46 @@ def render_learning_tab(df: pd.DataFrame):
 
     st.divider()
 
-    # Feedback history
+    # Feedback history (all signals — powers adaptive learning)
+    st.markdown("**Recent Feedback** *(learning signals for adaptive ranking)*")
     if st.session_state.feedback_log:
-        st.markdown("**Recent Feedback:**")
         fb_df = pd.DataFrame(st.session_state.feedback_log)
         fb_df["ts"] = pd.to_datetime(fb_df["ts"]).dt.strftime("%H:%M:%S")
-        emoji_map = {"engage": "✅", "skip": "⏭️", "bookmark": "🔖"}
-        fb_df["Feedback"] = fb_df["feedback"].map(emoji_map)
+        label_map = {"engage": "✅ Engage", "skip": "⏭️ Not Relevant", "bookmark": "🔖 Save"}
+        fb_df["Action"] = fb_df["feedback"].map(label_map)
         st.dataframe(
-            fb_df[["ts", "title", "domain", "Feedback"]]
+            fb_df[["ts", "title", "domain", "Action"]]
             .rename(columns={"ts": "Time", "title": "Opportunity", "domain": "Domain"}),
             use_container_width=True, hide_index=True,
         )
+        engage_n = (fb_df["feedback"] == "engage").sum()
+        skip_n   = (fb_df["feedback"] == "skip").sum()
+        save_n   = (fb_df["feedback"] == "bookmark").sum()
+        st.caption(f"✅ {engage_n} Engage · ⏭️ {skip_n} Not Relevant · 🔖 {save_n} Saved")
+    else:
+        st.caption("No feedback yet — click Engage or Not Relevant on any card to start training the bandit.")
+
+    st.divider()
+
+    # Saved Opportunities (bookmark-only — separate from learning signals)
+    st.markdown("### 🔖 Saved Opportunities")
+    if st.session_state.saved_list:
+        for item in reversed(st.session_state.saved_list):
+            url = item.get("url", "")
+            title_text = item.get("title", "")
+            domain = item.get("domain", "")
+            source = item.get("source", "").upper()
+            score = item.get("score", 0)
+            icon = SOURCE_ICONS.get(item.get("source", ""), "📄")
+            title_html = f"[{title_text}]({url})" if url and url.startswith("http") else title_text
+            st.markdown(
+                f"{icon} **{title_html}** · `{domain}` · {source} · score **{score:.0%}**"
+            )
+        if st.button("🗑️ Clear Saved List"):
+            st.session_state.saved_list = []
+            st.rerun()
+    else:
+        st.caption("Nothing saved yet — click 🔖 Save on any card to add it here.")
 
     st.divider()
     st.markdown("### 🎮 Simulate 50 Feedback Rounds")
