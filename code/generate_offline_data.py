@@ -9,6 +9,7 @@ import random
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 import numpy as np
 import pandas as pd
@@ -817,7 +818,7 @@ def generate_hn_records(domain: str, cfg: dict, n: int = 100) -> list[dict]:
             "data_source": "offline",
             "title": base_title,
             "description": f"Hacker News discussion: {base_title} — score: {score}, {comments} comments. Covers {kw} and related {domain} topics.",
-            "url": f"https://news.ycombinator.com/item?id={abs(hash(base_title + str(i))) % 40000000 + 30000000}",
+            "url": f"https://hn.algolia.com/?query={quote(base_title[:80])}&type=story",
             "domain": domain,
             "language": "",
             "tags": tags,

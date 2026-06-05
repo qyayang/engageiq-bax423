@@ -885,7 +885,7 @@ def render_learning_tab(df: pd.DataFrame):
             source = item.get("source", "").upper()
             score = item.get("score", 0)
             icon = SOURCE_ICONS.get(item.get("source", ""), "📄")
-            title_html = f"[{title_text}]({url})" if url and url.startswith("http") else title_text
+            title_html = f"[{title_text}]({url})" if _is_real_url(url) else title_text
             st.markdown(
                 f"{icon} **{title_html}** · `{domain}` · {source} · score **{score:.0%}**"
             )
