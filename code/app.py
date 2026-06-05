@@ -354,11 +354,12 @@ def _data_source_badge(opp: dict) -> str:
 
 
 def _is_real_url(url: str) -> bool:
-    """Returns False for known synthetic placeholder URLs."""
+    """Returns False for synthetic/search placeholder URLs that don't point to a real page."""
     if not url or url == "#":
         return False
-    # Offline dataset uses github.com/user/ as a placeholder username
     if "github.com/user/" in url:
+        return False
+    if "github.com/search?q=" in url:
         return False
     return True
 
@@ -430,6 +431,11 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
             st.markdown(f"**[\\#{rank}  {title_safe}]({url})**")
         else:
             st.markdown(f"**\\#{rank}  {title_safe}**")
+            st.markdown(
+                '<span style="font-size:11px;color:#6e7681;font-style:italic">'
+                '📋 Offline demo record — no real URL</span>',
+                unsafe_allow_html=True,
+            )
         # Description + stats + action
         st.markdown(
             f'<div style="font-size:13px;color:#8b949e;margin-bottom:4px">{desc}</div>'
@@ -636,7 +642,11 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
                 f'#{i+1}&nbsp; {safe_aq_title}</a>'
             )
         else:
-            aq_title_html = f'<span style="color:#8b949e;font-weight:700">#{i+1}&nbsp; {safe_aq_title}</span>'
+            aq_title_html = (
+                f'<span style="color:#8b949e;font-weight:700">#{i+1}&nbsp; {safe_aq_title}</span>'
+                f'<span style="font-size:10px;color:#6e7681;font-style:italic;margin-left:6px">'
+                f'📋 demo record</span>'
+            )
 
         st.markdown(f"""
 <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:10px;display:flex;gap:16px">
