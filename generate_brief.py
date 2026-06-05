@@ -401,7 +401,7 @@ def build():
         ["data/embeddings.npy — pre-computed 384-dim embeddings",   "✓ Included"],
         ["brief.pdf — this document",                                "✓ Included"],
         ["prompts.md — development + planned runtime prompts",       "✓ Included"],
-        ["Live public URL",                                          "See Canvas submission note"],
+        ["Live public URL",                                          "https://engageiq-bax423git-qianyingyang.streamlit.app"],
         ["ZIP: Yang_Alice_BAX423_Final.zip",                        "✓ Per one-pager spec"],
     ]
     chk_table = Table(chk, colWidths=[4.5*inch, 2.0*inch])
