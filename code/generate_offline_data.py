@@ -774,7 +774,7 @@ def generate_github_records(domain: str, cfg: dict, n: int = 400) -> list[dict]:
             "data_source": "offline",
             "title": f"{name}",
             "description": desc,
-            "url": f"https://github.com/user/{name.replace(' ', '-')}",
+            "url": f"https://github.com/search?q={quote(name.replace(' ', '-'))}&type=repositories",
             "domain": domain,
             "language": lang,
             "tags": tags,
