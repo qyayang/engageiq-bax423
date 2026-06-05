@@ -420,52 +420,36 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
     best_action = actions[0] if actions else ""
     best_action_short = html.escape(best_action[:120] + "…" if len(best_action) > 120 else best_action)
 
-    # Build title HTML directly — no parent div with conflicting color
-    safe_title = html.escape(title)
-    if _is_real_url(url):
-        safe_url = html.escape(url)
-        title_html = (
-            f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" '
-            f'style="display:block;font-size:16px;font-weight:700;'
-            f'color:#58a6ff;text-decoration:underline;margin-bottom:4px;cursor:pointer">'
-            f'#{rank}&nbsp; {safe_title}</a>'
-        )
-    else:
-        title_html = (
-            f'<span style="display:block;font-size:16px;font-weight:700;'
-            f'color:#8b949e;margin-bottom:4px">#{rank}&nbsp; {safe_title}</span>'
-        )
-
     col_main, col_score = st.columns([5, 1])
     with col_main:
-        st.markdown(f"""
-<style>
-  a[data-opp-link] {{
-    color: #58a6ff !important;
-    text-decoration: underline !important;
-  }}
-</style>
-<div class="opp-card">
-  <div style="margin-bottom:8px">{badge_html}</div>
-  {title_html}
-  <div style="font-size:13px;color:#8b949e;margin-bottom:6px">{desc}</div>
-  <div style="font-size:12px;color:#6e7681;margin-bottom:6px">{stats_str}</div>
-  <div style="font-size:12px;color:#3fb950;background:#1a7f371a;border-radius:4px;padding:6px 10px;border-left:3px solid #238636">
-    ⚡ <b>Best Action:</b> {best_action_short}
-  </div>
-</div>
-""", unsafe_allow_html=True)
+        # Badges (HTML fine for non-link elements)
+        st.markdown(f'<div style="margin-bottom:4px">{badge_html}</div>', unsafe_allow_html=True)
+        # Title: native Streamlit Markdown link — bypasses all CSS overrides on <a> tags
+        title_safe = title.replace("[", "\\[").replace("]", "\\]")
+        if _is_real_url(url):
+            st.markdown(f"**[\\#{rank}  {title_safe}]({url})**")
+        else:
+            st.markdown(f"**\\#{rank}  {title_safe}**")
+        # Description + stats + action
+        st.markdown(
+            f'<div style="font-size:13px;color:#8b949e;margin-bottom:4px">{desc}</div>'
+            f'<div style="font-size:12px;color:#6e7681;margin-bottom:6px">{stats_str}</div>'
+            f'<div style="font-size:12px;color:#3fb950;background:#1a7f371a;border-radius:4px;'
+            f'padding:6px 10px;border-left:3px solid #238636">'
+            f'\u26a1 <b>Best Action:</b> {best_action_short}</div>',
+            unsafe_allow_html=True,
+        )
 
     with col_score:
-        st.markdown(f"""
-<div style="text-align:center;padding:16px 0">
-  <div style="font-size:28px;font-weight:700;color:{score_color}">{score_pct}%</div>
-  <div style="font-size:11px;color:#8b949e">Engagement<br>Score</div>
-  <div class="score-bar" style="margin-top:8px">
-    <div class="score-fill" style="width:{score_pct}%;background:{score_color}"></div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="text-align:center;padding:16px 0">'
+            f'<div style="font-size:28px;font-weight:700;color:{score_color}">{score_pct}%</div>'
+            f'<div style="font-size:11px;color:#8b949e">Engagement<br>Score</div>'
+            f'<div class="score-bar" style="margin-top:8px">'
+            f'<div class="score-fill" style="width:{score_pct}%;background:{score_color}"></div>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
 
     # Expandable details
     with st.expander(f"🔍 Why this? · Suggested Actions · Feedback"):
