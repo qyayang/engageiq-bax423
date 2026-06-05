@@ -88,7 +88,7 @@ def build():
 
     story += section("Problem Statement")
     story.append(Paragraph(
-        "Developers and founders waste hours manually scanning GitHub, Reddit, and Hacker News to find "
+        "Developers and founders waste hours manually scanning GitHub and Hacker News to find "
         "where to contribute, comment, or build reputation. EngageIQ automates this by ingesting "
         "10,500+ opportunities across 15 technical domains, scoring them via semantic embeddings and "
         "community signals, and adapting rankings in real time from user feedback.", BODY))
@@ -96,7 +96,7 @@ def build():
     story += section("System Architecture")
     arch = [
         ["Stage", "Component", "BAX-423 Lecture"],
-        ["1 · Ingestion",   "GitHub API · Reddit public JSON · HN Firebase\nBloom Filter dedup · queue-based streaming", "Lecture 2"],
+        ["1 · Ingestion",   "GitHub API · HN Firebase API\nBloom Filter dedup · Python queue-based on-demand refresh", "Lecture 2"],
         ["2 · Embedding",   "Sentence-BERT all-MiniLM-L6-v2 (384-dim)\nFAISS IndexFlatIP — exact search < 2 ms",       "Lecture 5"],
         ["3 · Scoring",     "Composite: 0.40 relevance + 0.30 community\n+ 0.20 visibility + 0.10 (1−effort)",           "Lecture 7"],
         ["4 · Ranking",     "Multi-stage: candidate gen → composite → bandit\nDiversity re-rank (max 5/domain in top-50)","Lecture 7"],
@@ -127,9 +127,9 @@ def build():
         ["Metric", "Value"],
         ["Total records",         "10,500"],
         ["Technical domains",     "15 (700 records each)"],
-        ["Sources",               "GitHub 6,820 · Reddit 2,757 · Hacker News 923"],
-        ["Storage",               "CSV offline snapshot + SQLite (pre-seeded)"],
-        ["Live / offline split",  "1,000 live-labeled · 9,500 offline snapshot"],
+        ["Sources",               "GitHub 7,500 · Hacker News 3,000"],
+        ["Storage",               "CSV offline snapshot (committed to repo) + SQLite for live records"],
+        ["Live / offline split",  "10,500 offline snapshot · live records added via on-demand refresh"],
     ]
     ds_table = Table(ds, colWidths=[2.2*inch, 4.3*inch])
     ds_table.setStyle(TableStyle([
@@ -255,8 +255,8 @@ def build():
     story += section("6 Core Capabilities")
     caps = [
         ["#", "Capability", "Implementation"],
-        ["1", "Multi-Source Ingestion\n& Streaming",
-         "GitHub API · Reddit public JSON · HN Firebase\nBloom Filter dedup · queue-based live refresh"],
+        ["1", "Multi-Source Ingestion\n& On-Demand Refresh",
+         "GitHub API · Hacker News Firebase API\nBloom Filter dedup · Python queue-based live refresh"],
         ["2", "Content Embedding\n& Similarity Retrieval",
          "all-MiniLM-L6-v2 (384-dim) · FAISS IndexFlatIP\nEmbedding cache for <2 ms queries"],
         ["3", "Engagement Scoring\n& Multi-Stage Ranking",
@@ -341,14 +341,14 @@ def build():
         ["Streaming",
          "On-demand API refresh + Python queue/thread simulation",
          "Apache Kafka / Flink persistent streaming cluster"],
-        ["Reddit API",
-         "Public JSON endpoints (no authentication required)",
-         "Authenticated PRAW with OAuth2 token refresh"],
+        ["Data Sources",
+         "GitHub + Hacker News (two sources meets spec requirement;\nReddit excluded — OAuth2 API access unavailable in this scope)",
+         "Expand to authenticated APIs: Reddit PRAW, LinkedIn, DEV.to"],
         ["AI Suggestions",
          "Deterministic template-based engagement action generator\n(avoids API cost, latency, hallucination risk)",
          "LLM-generated actions via Claude / GPT with prompt caching"],
         ["Batch Analytics",
-         "Pandas batch over 10,500-record offline snapshot\n(sufficient for dataset size, <1 s)",
+         "Pandas batch over 10,500-record offline snapshot\n(sufficient for dataset size, <1 s query latency)",
          "Apache Spark / Dask for distributed processing at scale"],
         ["GH Archive",
          "build_real_dataset.py includes GH Archive support;\nnot used in runtime pipeline",
@@ -384,7 +384,7 @@ def build():
     fw = [
         "• Connect suggested engagement actions to a live LLM (e.g., Claude claude-haiku-4-5-20251001) for natural-language "
         "engagement drafts; cache generated briefs to minimize API cost.",
-        "• Integrate authenticated PRAW for broader Reddit coverage and post-level engagement scoring.",
+        "• Expand data sources to Reddit (authenticated PRAW), LinkedIn, and DEV.to for broader community coverage.",
         "• Add scheduled GH Archive pulls for historical trend analysis beyond real-time API limits.",
         "• Extend Thompson Sampling to opportunity-type preferences (issue vs. repo vs. post) "
         "for finer-grained adaptive ranking.",
@@ -397,8 +397,8 @@ def build():
     chk = [
         ["Item", "Status"],
         ["code/ — all .py files + requirements.txt",                "✓ Included"],
-        ["data/opportunities.csv — 10,500 records offline snapshot","✓ Included"],
-        ["data/engageiq.db — SQLite pre-seeded snapshot",           "✓ Included"],
+        ["data/opportunities.csv — 10,500 offline records (GitHub + HN)","✓ Included"],
+        ["data/embeddings.npy — pre-computed 384-dim embeddings",   "✓ Included"],
         ["brief.pdf — this document",                                "✓ Included"],
         ["prompts.md — development + planned runtime prompts",       "✓ Included"],
         ["Live public URL",                                          "See Canvas submission note"],

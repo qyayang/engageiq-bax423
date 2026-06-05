@@ -1,9 +1,9 @@
 # Key AI Prompts — EngageIQ (BAX-423 Final)
 
 ## Prompt 1 — Architecture Design
-**Prompt:** "I'm building EngageIQ for BAX-423 — a smart engagement opportunity scorer. The spec requires: multi-source ingestion from GitHub/Reddit/HN, Bloom filter dedup (Lecture 2), Sentence-BERT + FAISS retrieval (Lecture 5), multi-stage ranking with NDCG (Lecture 7), and Thompson Sampling bandit (Lecture 8). Help me design the full module structure and data flow before writing any code."
+**Prompt:** "I'm building EngageIQ for BAX-423 — a smart engagement opportunity scorer. The spec requires: multi-source ingestion from at least two sources (GitHub + Hacker News), Bloom filter dedup (Lecture 2), Sentence-BERT + FAISS retrieval (Lecture 5), multi-stage ranking with NDCG (Lecture 7), and Thompson Sampling bandit (Lecture 8). Help me design the full module structure and data flow before writing any code."
 
-**Purpose:** Established the overall architecture and module breakdown (bloom_filter → embeddings → scoring → ranking → adaptive_learning) before coding, ensuring all 4 BAX-423 techniques had clear homes and data flowed cleanly between stages.
+**Purpose:** Established the overall architecture and module breakdown (bloom_filter → embeddings → scoring → ranking → adaptive_learning) before coding, ensuring all 4 BAX-423 techniques had clear homes and data flowed cleanly between stages. Initial design considered Reddit as a third source; final scope uses GitHub + Hacker News, which satisfies the "at least two sources" requirement while avoiding OAuth2 authentication complexity.
 
 ---
 
@@ -57,7 +57,7 @@
 ---
 
 ## Prompt 9 — Streaming Deduplication Integration
-**Prompt:** "Show how to integrate a Bloom filter into a streaming data ingestion pipeline. The producer fetches from GitHub/Reddit/HN APIs in a background thread, the consumer drains a Python queue. Track duplicates_blocked vs records_ingested for the demo. The Bloom filter should persist across fetch calls."
+**Prompt:** "Show how to integrate a Bloom filter into a streaming data ingestion pipeline. The producer fetches from GitHub and Hacker News APIs in a background thread, the consumer drains a Python queue. Track duplicates_blocked vs records_ingested for the demo. The Bloom filter should persist across fetch calls."
 
 **Purpose:** Shaped the StreamingIngester class and its producer/consumer pattern. This ensures the Bloom filter dedup is visible in the UI (sidebar shows items added / duplicates blocked) and maps clearly to the Kafka streaming architecture described in Lecture 3.
 

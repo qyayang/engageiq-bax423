@@ -1,6 +1,6 @@
 """
 Offline dataset generator — produces ≥10,000 records across 15 technical domains.
-Covers GitHub repos, Reddit posts, and Hacker News stories.
+Sources: GitHub repos/issues + Hacker News stories (no Reddit).
 Run once: python generate_offline_data.py
 """
 import hashlib
@@ -769,6 +769,8 @@ def generate_github_records(domain: str, cfg: dict, n: int = 400) -> list[dict]:
         record = {
             "id": make_id("github", domain, i + 1000 * DOMAINS.index(domain)),
             "source": "github",
+            "record_type": "issue" if gfi > 0 and random.random() < 0.3 else "repo",
+            "data_source": "offline",
             "title": f"{name}",
             "description": desc,
             "url": f"https://github.com/user/{name.replace(' ', '-')}",
@@ -786,50 +788,6 @@ def generate_github_records(domain: str, cfg: dict, n: int = 400) -> list[dict]:
             "growth_rate": growth,
             "created_at": random_date(730),
             "updated_at": random_date(30),
-        }
-        records.append(record)
-    return records
-
-
-def generate_reddit_records(domain: str, cfg: dict, n: int = 200) -> list[dict]:
-    records = []
-    posts = cfg["reddit_posts"]
-    subreddits = cfg["subreddits"]
-    keywords = cfg["keywords"]
-
-    for i in range(n):
-        template_idx = i % len(posts)
-        base_title = posts[template_idx]
-        kw = random.choice(keywords)
-        variation = i // len(posts)
-        if variation > 0:
-            base_title = base_title + f" [Part {variation + 1}]"
-
-        upvotes = max(1, int(np.random.lognormal(5.5, 1.8)))
-        comments = max(0, int(upvotes * random.uniform(0.02, 0.4)))
-        subreddit = random.choice(subreddits)
-        tags = json.dumps(random.sample(keywords, min(3, len(keywords))))
-
-        record = {
-            "id": make_id("reddit", domain, i + 2000 * DOMAINS.index(domain)),
-            "source": "reddit",
-            "title": base_title,
-            "description": f"Discussion thread on r/{subreddit} about {kw} — {comments} comments, {upvotes} upvotes. Topic: {base_title.lower()}",
-            "url": f"https://reddit.com/r/{subreddit}/comments/{make_id('r', domain, i)[:6]}",
-            "domain": domain,
-            "language": "",
-            "tags": tags,
-            "stars": 0,
-            "forks": 0,
-            "contributors": 0,
-            "open_issues": 0,
-            "good_first_issues": 0,
-            "comments": comments,
-            "upvotes": upvotes,
-            "activity_score": compute_activity_score(0, 0, 0, comments, upvotes / 100),
-            "growth_rate": round(random.uniform(0, 50), 2),
-            "created_at": random_date(90),
-            "updated_at": random_date(7),
         }
         records.append(record)
     return records
@@ -855,6 +813,8 @@ def generate_hn_records(domain: str, cfg: dict, n: int = 100) -> list[dict]:
         record = {
             "id": make_id("hackernews", domain, i + 3000 * DOMAINS.index(domain)),
             "source": "hackernews",
+            "record_type": "hn_story",
+            "data_source": "offline",
             "title": base_title,
             "description": f"Hacker News discussion: {base_title} — score: {score}, {comments} comments. Covers {kw} and related {domain} topics.",
             "url": f"https://news.ycombinator.com/item?id={abs(hash(base_title + str(i))) % 40000000 + 30000000}",
@@ -880,14 +840,13 @@ def generate_hn_records(domain: str, cfg: dict, n: int = 100) -> list[dict]:
 def main():
     all_records = []
 
-    print("Generating offline dataset...")
+    print("Generating offline dataset (GitHub + Hacker News)...")
     for domain in DOMAINS:
         cfg = DOMAIN_CFG[domain]
-        gh = generate_github_records(domain, cfg, n=400)
-        rd = generate_reddit_records(domain, cfg, n=200)
-        hn = generate_hn_records(domain, cfg, n=100)
-        all_records.extend(gh + rd + hn)
-        print(f"  {domain}: {len(gh)} GitHub + {len(rd)} Reddit + {len(hn)} HN = {len(gh)+len(rd)+len(hn)}")
+        gh = generate_github_records(domain, cfg, n=500)
+        hn = generate_hn_records(domain, cfg, n=200)
+        all_records.extend(gh + hn)
+        print(f"  {domain}: {len(gh)} GitHub + {len(hn)} HN = {len(gh)+len(hn)}")
 
     df = pd.DataFrame(all_records)
     df = df.drop_duplicates(subset=["id"])
@@ -896,6 +855,7 @@ def main():
     print(f"\nSaved {len(df)} records to {OUT_CSV}")
     print(f"Domains covered: {df['domain'].nunique()}")
     print(f"Sources: {df['source'].value_counts().to_dict()}")
+    print(f"data_source: {df['data_source'].value_counts().to_dict()}")
     print("\nRecord counts by domain:")
     for domain, count in df.groupby("domain").size().items():
         print(f"  {domain}: {count}")
