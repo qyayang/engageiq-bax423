@@ -87,7 +87,7 @@ def rank_candidates(
         row_dict.update(scores)
         row_dict["final_score"] = round(final_score, 4)
         row_dict["explanation"] = build_score_explanation(row_dict, scores)
-        row_dict["suggested_actions"] = suggest_actions(row_dict)
+        row_dict["suggested_actions"] = suggest_actions(row_dict, persona=persona)
 
         results.append(row_dict)
 

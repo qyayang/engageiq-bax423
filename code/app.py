@@ -166,6 +166,44 @@ def get_bandit() -> ThompsonBandit:
     return ThompsonBandit.load()
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _ai_actions_cached(opp_id: str, title: str, source: str, domain: str,
+                       description: str, stars: int, gfi: int, comments: int,
+                       persona: str, fallback_json: str) -> list[str]:
+    """Cached AI action generation — keyed by opp_id+persona, TTL 1 hour."""
+    import json as _json
+    fallback = _json.loads(fallback_json)
+    try:
+        from ai_actions import generate_ai_actions
+        opp = {"title": title, "source": source, "domain": domain,
+               "description": description, "stars": stars,
+               "good_first_issues": gfi, "comments": comments}
+        return generate_ai_actions(opp, persona, fallback)
+    except Exception:
+        return fallback
+
+
+def enrich_with_ai(opp: dict, persona: str) -> list[str]:
+    """Call AI for a single displayed item, with caching. Falls back silently."""
+    import json as _json
+    fallback = opp.get("suggested_actions", [])
+    try:
+        return _ai_actions_cached(
+            opp_id=str(opp.get("id", "")),
+            title=opp.get("title", ""),
+            source=opp.get("source", ""),
+            domain=opp.get("domain", ""),
+            description=(opp.get("description", "") or "")[:200],
+            stars=int(opp.get("stars", 0) or 0),
+            gfi=int(opp.get("good_first_issues", 0) or 0),
+            comments=int(opp.get("comments", 0) or 0),
+            persona=persona,
+            fallback_json=_json.dumps(fallback),
+        )
+    except Exception:
+        return fallback
+
+
 # ── session state init ───────────────────────────────────────────────────────
 def _init_state():
     defaults = {
@@ -438,10 +476,10 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
 
         with detail_col2:
             st.markdown("**Suggested Actions:**")
-            actions = opp.get("suggested_actions", [])
-            if actions:
-                for a in actions:
-                    st.markdown(f"- {a}")
+            persona_role = st.session_state.get("profile", {}).get("role", "")
+            ai_acts = enrich_with_ai(opp, persona_role)
+            for a in ai_acts:
+                st.markdown(f"- {a}")
 
         st.markdown("**Your Feedback:**")
         fb_col1, fb_col2, fb_col3 = st.columns(3)
@@ -574,8 +612,8 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
         domain = opp.get("domain", "")
         score_pct = int(opp.get("final_score", 0) * 100)
         score_color = "#3fb950" if score_pct > 65 else "#d29922"
-        actions = opp.get("suggested_actions", [])
-        best_action = actions[0] if actions else "Explore this opportunity"
+        ai_actions = enrich_with_ai(opp, profile.get("role", ""))
+        best_action = ai_actions[0] if ai_actions else "Explore this opportunity"
         effort = opp.get("effort_score", 0.5)
         time_est = effort_time(effort)
         reason = why_now(opp)
