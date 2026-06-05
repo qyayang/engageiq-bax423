@@ -52,7 +52,7 @@ def _safe_log_norm(x: float, scale: float = 1.0) -> float:
 
 
 def compute_community_health(row: dict) -> float:
-    source = row.get("source", "")
+    source = row.get("source", "") or ""
     if source == "github":
         contrib = _safe_log_norm(row.get("contributors", 0), 200)
         issues  = _safe_log_norm(row.get("open_issues", 0), 500)
@@ -70,7 +70,7 @@ def compute_community_health(row: dict) -> float:
 
 
 def compute_visibility_potential(row: dict) -> float:
-    source = row.get("source", "")
+    source = row.get("source", "") or ""
     if source == "github":
         stars_norm = _safe_log_norm(row.get("stars", 0), 50000)
         contrib    = max(row.get("contributors", 1), 1)
@@ -82,7 +82,7 @@ def compute_visibility_potential(row: dict) -> float:
 
 
 def compute_effort_score(row: dict) -> float:
-    source = row.get("source", "")
+    source = row.get("source", "") or ""
     if source == "github":
         gfi = row.get("good_first_issues", 0)
         if gfi > 0:
@@ -98,10 +98,10 @@ def compute_effort_score(row: dict) -> float:
 
 def compute_trend_score(row: dict) -> float:
     """Recency + velocity signal. Weighted for HN/Reddit sources."""
-    growth   = _safe_log_norm(row.get("growth_rate", 0), 200)
-    upvotes  = _safe_log_norm(row.get("upvotes", 0), 5000)
-    comments = _safe_log_norm(row.get("comments", 0), 500)
-    if row.get("source", "") in ("hackernews", "reddit"):
+    growth   = _safe_log_norm(row.get("growth_rate", 0) or 0, 200)
+    upvotes  = _safe_log_norm(row.get("upvotes", 0) or 0, 5000)
+    comments = _safe_log_norm(row.get("comments", 0) or 0, 500)
+    if (row.get("source") or "") in ("hackernews", "reddit"):
         return round(0.35 * growth + 0.38 * upvotes + 0.27 * comments, 4)
     else:
         return round(0.70 * growth + 0.20 * upvotes + 0.10 * comments, 4)
@@ -115,9 +115,9 @@ def _intent_bonus(row: dict, intent: str | None) -> float:
     if intent is None:
         return 0.0
 
-    source = row.get("source", "")
-    lang   = row.get("language", "").lower()
-    domain = row.get("domain", "")
+    source = row.get("source", "") or ""
+    lang   = (row.get("language") or "").lower()
+    domain = row.get("domain", "") or ""
     bonus  = 0.0
 
     if intent == "contribution":
