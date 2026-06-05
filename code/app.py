@@ -309,9 +309,28 @@ def _data_source_badge(opp: dict) -> str:
     Uses _data_source field set at fetch time — avoids URL-based guessing
     which would misclassify synthetic Reddit/HN URLs as Live.
     """
-    if opp.get("_data_source") == "live":
+    if opp.get("_data_source") == "live" or opp.get("data_source") == "live":
         return '<span class="badge" style="background:#1a7f371a;color:#3fb950;border:1px solid #238636">🟢 Live</span>'
     return '<span class="badge" style="background:#30363d;color:#8b949e;border:1px solid #484f58">🔵 Demo</span>'
+
+
+def _is_real_url(url: str) -> bool:
+    """Returns False for known synthetic placeholder URLs."""
+    if not url or url == "#":
+        return False
+    # Offline dataset uses github.com/user/ as a placeholder username
+    if "github.com/user/" in url:
+        return False
+    return True
+
+
+def _render_title_link(title: str, url: str, rank: int = None, style: str = "color:#58a6ff;text-decoration:none") -> str:
+    prefix = f"#{rank} &nbsp;" if rank is not None else ""
+    safe_title = html.escape(title)
+    if _is_real_url(url):
+        safe_url = html.escape(url)
+        return f'{prefix}<a href="{safe_url}" target="_blank" style="{style}">{safe_title}</a>'
+    return f'{prefix}<span style="color:#8b949e" title="Demo data — no real URL">{safe_title}</span>'
 
 
 def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
@@ -354,8 +373,6 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
     stats_str = " &nbsp;·&nbsp; ".join(stats_parts)
 
     desc = html.escape(opp.get("description", "")[:160])
-    safe_title = html.escape(title)
-    safe_url = html.escape(url)
     opp_id = opp.get("id", "")
 
     # Best next action (visible without expanding)
@@ -363,13 +380,15 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
     best_action = actions[0] if actions else ""
     best_action_short = html.escape(best_action[:120] + "…" if len(best_action) > 120 else best_action)
 
+    title_html = _render_title_link(title, url, rank=rank)
+
     col_main, col_score = st.columns([5, 1])
     with col_main:
         st.markdown(f"""
 <div class="opp-card">
   <div style="margin-bottom:8px">{badge_html}</div>
   <div style="font-size:16px;font-weight:600;color:#e6edf3;margin-bottom:4px">
-    #{rank} &nbsp;<a href="{safe_url}" target="_blank" style="color:#58a6ff;text-decoration:none">{safe_title}</a>
+    {title_html}
   </div>
   <div style="font-size:13px;color:#8b949e;margin-bottom:6px">{desc}</div>
   <div style="font-size:12px;color:#6e7681;margin-bottom:6px">{stats_str}</div>
@@ -561,9 +580,8 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
         time_est = effort_time(effort)
         reason = why_now(opp)
         opp_id = opp.get("id", "")
-        safe_url = html.escape(url)
-        safe_title = html.escape(title[:80])
         safe_action = html.escape(best_action[:130])
+        aq_title_html = _render_title_link(title[:80], url, rank=i+1, style="color:#e6edf3;text-decoration:none")
 
         st.markdown(f"""
 <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:10px;display:flex;gap:16px">
@@ -577,7 +595,7 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
       &nbsp;·&nbsp; ⏱ {time_est}
     </div>
     <div style="font-size:15px;font-weight:600;color:#e6edf3;margin-bottom:6px">
-      <a href="{safe_url}" target="_blank" style="color:#e6edf3;text-decoration:none">#{i+1} {safe_title}</a>
+      {aq_title_html}
     </div>
     <div style="font-size:12px;color:#8b949e;margin-bottom:6px">{reason}</div>
     <div style="font-size:12px;color:#3fb950;background:#1a7f371a;border-radius:4px;padding:5px 10px;border-left:3px solid #238636">

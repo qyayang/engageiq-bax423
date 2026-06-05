@@ -15,8 +15,11 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import requests
+import praw
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
+REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 OUT_CSV = DATA_DIR / "opportunities.csv"
@@ -187,34 +190,41 @@ def fetch_github_issues_real(domain: str, pages: int = 2) -> list[dict]:
 
 
 # ── Reddit ────────────────────────────────────────────────────────────────────
+def _get_reddit() -> praw.Reddit | None:
+    if not REDDIT_CLIENT_ID or not REDDIT_CLIENT_SECRET:
+        return None
+    return praw.Reddit(
+        client_id=REDDIT_CLIENT_ID,
+        client_secret=REDDIT_CLIENT_SECRET,
+        user_agent="EngageIQ/1.0 BAX423 (by /u/engageiq_bot)",
+    )
+
+
 def fetch_reddit_real(domain: str, n: int = 50) -> list[dict]:
+    reddit = _get_reddit()
+    if reddit is None:
+        print(f"  Reddit skipped — REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET not set")
+        return []
+
     subs = DOMAIN_SUBREDDITS.get(domain, ["programming"])
     records = []
     for sub in subs:
         for sort in ["hot", "top"]:
             try:
-                resp = requests.get(
-                    f"https://www.reddit.com/r/{sub}/{sort}.json",
-                    headers={"User-Agent": "EngageIQ/1.0 BAX423"},
-                    params={"limit": 50, "t": "week"},
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                posts = resp.json().get("data", {}).get("children", [])
+                subreddit = reddit.subreddit(sub)
+                posts = list(subreddit.hot(limit=50) if sort == "hot" else subreddit.top("week", limit=50))
                 for post in posts:
-                    d = post.get("data", {})
-                    if d.get("stickied") or not d.get("title"):
+                    if post.stickied or not post.title:
                         continue
-                    score = d.get("score", 0)
-                    n_comments = d.get("num_comments", 0)
-                    ts = d.get("created_utc", 0)
-                    created = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else _now()
+                    score = post.score
+                    n_comments = post.num_comments
+                    created = datetime.fromtimestamp(post.created_utc).strftime("%Y-%m-%d %H:%M:%S")
                     records.append({
-                        "id": _id("reddit", d.get("id", "")),
+                        "id": _id("reddit", post.id),
                         "source": "reddit", "record_type": "reddit_post", "data_source": "live",
-                        "title": d.get("title", ""),
-                        "description": f"r/{sub} [{sort}] — {n_comments} comments, {score} upvotes. {(d.get('selftext') or '')[:200]}",
-                        "url": f"https://reddit.com{d.get('permalink', '')}",
+                        "title": post.title,
+                        "description": f"r/{sub} [{sort}] — {n_comments} comments, {score} upvotes. {(post.selftext or '')[:200]}",
+                        "url": f"https://reddit.com{post.permalink}",
                         "domain": domain, "language": "",
                         "tags": json.dumps([sub]),
                         "stars": 0, "forks": 0, "contributors": 0,
@@ -224,7 +234,7 @@ def fetch_reddit_real(domain: str, n: int = 50) -> list[dict]:
                         "growth_rate": round(score / 100, 2),
                         "created_at": created, "updated_at": _now(),
                     })
-                time.sleep(1.0)
+                time.sleep(0.5)
             except Exception as e:
                 print(f"  Reddit error (r/{sub} {sort}): {e}")
     return records[:n]
@@ -389,62 +399,39 @@ def main():
     # 1. GitHub repos (real API)
     print("\n[1/4] GitHub Repos (real API search)...")
     for domain in DOMAINS:
-        recs = fetch_github_repos_real(domain, pages=2 if GITHUB_TOKEN else 1)
+        recs = fetch_github_repos_real(domain, pages=3 if GITHUB_TOKEN else 1)
         add(recs)
         print(f"  {domain}: {len(recs)} repos")
 
     # 2. GitHub Issues (GFI)
     print("\n[2/4] GitHub Issues — good first issues (real API)...")
     for domain in DOMAINS:
-        recs = fetch_github_issues_real(domain, pages=1)
+        recs = fetch_github_issues_real(domain, pages=2 if GITHUB_TOKEN else 1)
         add(recs)
         print(f"  {domain}: {len(recs)} issues")
 
-    # 3. Reddit (real public API)
-    print("\n[3/4] Reddit (real public API)...")
-    for domain in DOMAINS:
-        recs = fetch_reddit_real(domain, n=40)
-        add(recs)
-        print(f"  {domain}: {len(recs)} posts")
+    # 3. Reddit (requires OAuth2 credentials)
+    print("\n[3/4] Reddit...")
+    if REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET:
+        for domain in DOMAINS:
+            recs = fetch_reddit_real(domain, n=50)
+            add(recs)
+            print(f"  {domain}: {len(recs)} posts")
+    else:
+        print("  Skipped — Reddit API requires OAuth2. Set REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET to enable.")
 
     # 4. Hacker News (real Firebase API)
     print("\n[4/4] Hacker News (real Firebase API)...")
     for domain in DOMAINS:
-        recs = fetch_hn_real(domain, n=30)
+        recs = fetch_hn_real(domain, n=50)
         add(recs)
         print(f"  {domain}: {len(recs)} stories")
 
     # 5. GH Archive (real trending stream)
-    add(fetch_gharchive(max_records=1500))
+    add(fetch_gharchive(max_records=2000))
 
     real_df = pd.DataFrame(all_records)
     print(f"\nReal API records collected: {len(real_df)}")
-
-    # Fill to 10,500 with synthetic supplement if needed
-    target = 10500
-    if len(real_df) < target and OUT_CSV.exists():
-        print(f"Supplementing with synthetic records to reach {target}...")
-        synth_df = pd.read_csv(str(OUT_CSV))
-        synth_df["data_source"] = "offline"
-        if "record_type" not in synth_df.columns:
-            synth_df["record_type"] = synth_df.apply(
-                lambda r: "issue" if "[Issue]" in str(r["title"])
-                else "reddit_post" if r["source"] == "reddit"
-                else "hn_story" if r["source"] == "hackernews"
-                else "repo", axis=1
-            )
-        # Remove any synthetic records whose domains are already well-covered
-        domain_counts = real_df.groupby("domain").size()
-        needed = []
-        for domain in DOMAINS:
-            real_count = domain_counts.get(domain, 0)
-            if real_count < 700:
-                supplement = synth_df[synth_df["domain"] == domain].head(700 - real_count)
-                needed.append(supplement)
-        if needed:
-            supplement_df = pd.concat(needed, ignore_index=True)
-            real_df = pd.concat([real_df, supplement_df], ignore_index=True)
-        print(f"After supplement: {len(real_df)} total records")
 
     real_df = real_df.drop_duplicates(subset=["id"])
     real_df.to_csv(str(OUT_CSV), index=False)
