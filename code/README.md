@@ -14,25 +14,24 @@ EngageIQ discovers, scores, and ranks where a professional should invest their t
 | Technique | Lecture | Implementation |
 |-----------|---------|----------------|
 | **Bloom Filter** (sketching) | Lecture 2 | Streaming deduplication — `bloom_filter.py` |
-| **Sentence-BERT + FAISS IVF** | Lecture 5 | ANN retrieval — `embeddings.py` |
+| **Sentence-BERT + FAISS** | Lecture 5 | ANN retrieval — `embeddings.py` |
 | **Multi-stage Ranking** (NDCG) | Lecture 7 | Candidate gen → scoring → re-rank — `ranking.py` |
 | **Thompson Sampling** (RL bandit) | Lecture 8 | Adaptive learning — `adaptive_learning.py` |
 
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
+# 1. Install dependencies (from the engageiq/ root or code/ directory)
 pip install -r requirements.txt
 
-# 2. Generate the offline dataset (≥10,000 records across 15 domains)
+# 2. Launch the app — offline dataset is pre-loaded, no data generation needed
 cd code
-python generate_offline_data.py
-
-# 3. Launch the app
 streamlit run app.py
 ```
 
-The first run computes embeddings (~20 seconds). Subsequent runs use cached embeddings.
+The first run computes and caches embeddings (~20–40 seconds). Subsequent runs use the cache.
+
+> **Note:** The offline dataset (`data/opportunities.csv`, 10,500 records) is already included. Re-fetching live data via `build_real_dataset.py` is optional and requires network/API access — it may overwrite the cache.
 
 ## Architecture
 
@@ -41,9 +40,10 @@ Multi-source ingestion (GitHub / Reddit / HN)
     ↓
 Bloom Filter deduplication (Lecture 2)
     ↓
-Sentence-BERT embedding (Lecture 5)
+Sentence-BERT embedding — all-MiniLM-L6-v2, 384-dim (Lecture 5)
     ↓
-FAISS IVF ANN retrieval — top 300 candidates
+FAISS IndexFlatIP (exact inner-product search, <2ms for 10k vectors)
+IVFFlat used automatically if dataset exceeds 50k records
     ↓
 Composite engagement scoring:
   0.40 × relevance + 0.30 × community + 0.20 × visibility + 0.10 × (1−effort)
@@ -57,18 +57,20 @@ Streamlit Dashboard
 
 ## 6 Core Capabilities
 
-1. **Multi-Source Ingestion & Streaming** — GitHub API, Reddit public JSON, Hacker News Firebase API; Bloom filter dedup; Python queue streaming simulation
-2. **Content Embedding & Similarity** — `all-MiniLM-L6-v2` (384-dim) + FAISS IVFFlat index
+1. **Multi-Source Ingestion & Streaming** — GitHub API, Reddit public JSON, Hacker News Firebase API; Bloom filter dedup; queue-based live ingestion simulation
+2. **Content Embedding & Similarity** — `all-MiniLM-L6-v2` (384-dim) + FAISS IndexFlatIP (exact search at ≤50k scale)
 3. **Engagement Scoring & Ranking** — 4-component composite score; NDCG@10 evaluation benchmark
 4. **Adaptive Learning** — Thompson Sampling bandit with 50-round simulation demo
-5. **Batch Analytics** — domain health, trending repos, volume-over-time, rising opportunities
-6. **Dashboard & Brief** — ranked cards with "Why this?", suggested actions, PDF/CSV export
+5. **Batch Analytics** — domain health, trending repos, volume-over-time, rising opportunities (Pandas batch over offline snapshot)
+6. **Dashboard & Brief** — ranked cards with "Why this?", suggested actions, CSV/JSON export
 
 ## Dataset
 
 - `data/opportunities.csv` — 10,500 records across 15 technical domains
-- Sources: GitHub (6,000), Reddit (3,000), Hacker News (1,500)
-- Generated via `generate_offline_data.py`; supplemented by live API on demand
+- `data/engageiq.db` — SQLite offline snapshot (same 10,500 records, pre-seeded)
+- Sources: GitHub (6,820), Reddit (2,757), Hacker News (923)
+- 9,500 offline records + 1,000 live-labeled records
+- Collected via `build_real_dataset.py`; supplemented by live API on demand
 
 ## Test Personas
 
@@ -103,12 +105,17 @@ engageiq/
 │   ├── analytics.py            # Batch analytics & trend detection
 │   ├── data_collector.py       # Live API collectors + streaming ingester
 │   ├── db.py                   # SQLite utilities
-│   ├── generate_offline_data.py
+│   ├── build_real_dataset.py   # Optional: re-fetch data from APIs (needs network)
 │   ├── requirements.txt
 │   └── README.md
 ├── data/
-│   ├── opportunities.csv       # Offline snapshot (≥10,000 records)
-│   ├── embeddings.npy          # Cached embeddings (auto-generated)
-│   └── embedding_ids.npy       # Embedding ID mapping (auto-generated)
+│   ├── opportunities.csv       # Offline snapshot (10,500 records, pre-included)
+│   ├── engageiq.db             # SQLite snapshot (same data, pre-seeded)
+│   ├── embeddings.npy          # Cached embeddings (auto-generated on first run)
+│   └── embedding_ids.npy       # Embedding ID mapping (auto-generated on first run)
 └── prompts.md
 ```
+
+## Live Deployment
+
+App URL: *(to be added after deployment)*

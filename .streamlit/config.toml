@@ -8,3 +8,8 @@ textColor = "#e6edf3"
 [server]
 headless = true
 port = 8501
+enableXsrfProtection = false
+maxUploadSize = 50
+
+[browser]
+gatherUsageStats = false
