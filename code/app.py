@@ -374,12 +374,22 @@ def persona_intent_rerank(
     caps     = _SRC_CAPS.get(intent or "", {})
     src_seen: dict[str, int] = {}
     capped   = []
-    for r in sorted(ranked, key=score, reverse=True):
+    # Pre-compute scores so we can store them alongside each record.
+    # Storing display_score ensures the number shown in the UI always matches
+    # the actual sort order (final_score alone is pre-rerank and can appear
+    # out of sequence relative to the reranked positions).
+    scored = sorted(((score(r), r) for r in ranked), key=lambda x: x[0], reverse=True)
+    s_max  = scored[0][0] if scored else 1.0
+    for rank_s, r in scored:
         src = r.get("source", "")
         if src in caps and src_seen.get(src, 0) >= caps[src]:
             continue
         src_seen[src] = src_seen.get(src, 0) + 1
-        capped.append(r)
+        new_r = dict(r)
+        # Normalise to [0, 1] relative to the top candidate so the bar/percentage
+        # remains interpretable and is guaranteed non-increasing down the list.
+        new_r["display_score"] = min(rank_s / max(s_max, 1e-6), 1.0)
+        capped.append(new_r)
     return capped
 
 
@@ -711,7 +721,7 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
     icon = SOURCE_ICONS.get(source, "📄")
     domain = opp.get("domain", "")
     title = opp.get("title", "Untitled")
-    score = opp.get("final_score", opp.get("composite_score", 0.0))
+    score = opp.get("display_score", opp.get("final_score", opp.get("composite_score", 0.0)))
     gfi = opp.get("good_first_issues", 0)
     stars = opp.get("stars", 0)
     comments = opp.get("comments", 0)
@@ -1052,7 +1062,7 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
         title = _clean_display_title(opp.get("title", ""))
         url = opp.get("url", "#")
         domain = opp.get("domain", "")
-        score_pct = int(opp.get("final_score", 0) * 100)
+        score_pct = int(opp.get("display_score", opp.get("final_score", 0)) * 100)
         score_color = "#3fb950" if score_pct > 65 else "#d29922"
         ai_actions = enrich_with_ai(opp, profile.get("role", ""))
         best_action = ai_actions[0] if ai_actions else "Explore this opportunity"
@@ -1420,7 +1430,7 @@ def render_learning_tab(df: pd.DataFrame):
     st.divider()
     # Ranking benchmark
     st.markdown("### 📐 Ranking Method Benchmark (NDCG@10)")
-    st.caption("Compares 4 ranking approaches on 500-record sample to validate multi-stage pipeline.")
+    st.caption("Compares 4 ranking approaches on 500-record sample. Higher NDCG@10 = better ranking quality (max = 1.0).")
 
     if st.button("🔬 Run Ranking Benchmark", use_container_width=True):
         all_embs, all_ids = load_or_compute_embeddings(df)
@@ -1436,7 +1446,7 @@ def render_learning_tab(df: pd.DataFrame):
             )
         bench_df = pd.DataFrame(
             [{"Method": k, "NDCG@10": v} for k, v in results.items()]
-        ).sort_values("NDCG@10")
+        ).sort_values("NDCG@10", ascending=False)
 
         fig = px.bar(
             bench_df, x="NDCG@10", y="Method",
@@ -1573,10 +1583,26 @@ def render_persona_tab(df: pd.DataFrame):
         ranked = rank_candidates(df, c_ids, c_sims, top_n=80, persona=role, intent_override=intent)
         top10  = persona_intent_rerank(ranked, interests, intent)[:10]
 
+        # Expand interests with domain aliases used in the GitHub dataset so that
+        # "DevOps/K8s" matches records labelled "DevOps", "Developer Tools" matches
+        # "DevTools", etc.  Without this, domain_match is systematically underestimated.
+        _PERSONA_ALIAS = {
+            "DevOps/K8s":               "DevOps",
+            "Developer Tools":          "DevTools",
+            "Frontend (React/Web)":     "Frontend",
+            "Mobile Dev (iOS/Flutter)": "Mobile Dev",
+            "Python Data Eng":          "Data Science",
+        }
+        expanded_interests = set(interests)
+        for _i in interests:
+            _a = _PERSONA_ALIAS.get(_i)
+            if _a:
+                expanded_interests.add(_a)
+
         gfi_count           = sum(1 for r in top10 if r.get("good_first_issues", 0) > 0)
-        domain_match        = sum(1 for r in top10 if r.get("domain", "") in interests)
+        domain_match        = sum(1 for r in top10 if r.get("domain", "") in expanded_interests)
         cpp_count           = sum(1 for r in top10 if _safe_text(r.get("language")).lower() in ("c", "c++", "cpp", "rust"))
-        avg_score           = np.mean([r.get("final_score", 0) for r in top10]) if top10 else 0
+        avg_score           = np.mean([r.get("display_score", r.get("final_score", 0)) for r in top10]) if top10 else 0
         avg_trend           = np.mean([r.get("trend_score", r.get("growth_rate", 0)) for r in top10]) if top10 else 0
         discussion_count    = sum(1 for r in top10 if r.get("source", "") == "hackernews")
         domain_diversity    = len({r.get("domain", "") for r in top10 if r.get("domain", "")})
@@ -1651,7 +1677,7 @@ def render_persona_tab(df: pd.DataFrame):
                 title_md = f"[{r['title'][:70]}]({r['url']})" if _is_real_url(r.get("url", ""), r) else r["title"][:70]
                 st.markdown(
                     f"{i+1}. {icon} {title_md} — "
-                    f"`{r['domain']}` — **{r.get('final_score', 0):.0%}**"
+                    f"`{r['domain']}` — **{r.get('display_score', r.get('final_score', 0)):.0%}**"
                 )
 
     res_df = pd.DataFrame(results_table)

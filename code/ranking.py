@@ -168,7 +168,11 @@ def benchmark_ranking_methods(
     full_ids = [r["id"] for r in full_results[:k]]
     full_scores = [relevance(i) for i in full_ids]
 
-    ideal = [1.0] * len(persona_relevant_domains) + [0.1] * (k - len(persona_relevant_domains))
+    # Ideal = actual relevance distribution of the full sample, sorted best-first.
+    # This guarantees IDCG ≥ DCG for any ranking of the same records, so NDCG ≤ 1.0.
+    # (The old approach used len(domains) as the 1.0-count, underestimating IDCG when
+    #  a method retrieves more than len(domains) relevant items in its top-k.)
+    ideal = sorted([relevance(i) for i in sample_ids], reverse=True)
 
     return {
         "Random Baseline": ndcg_at_k(random_scores, ideal, k),
