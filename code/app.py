@@ -174,6 +174,7 @@ _INTEREST_DOMAIN_ALIAS: dict[str, str] = {
     "Cross-Platform Mobile": "Mobile Dev (iOS/Flutter)",
     "Developer Tools":       "DevTools",
     "DevOps/K8s":            "DevOps",
+    "Python Data Eng":       "Data Science",
 }
 
 
@@ -271,6 +272,14 @@ def persona_intent_rerank(
             if domain in ("DevOps/K8s", "B2B SaaS", "DevOps") and not any(
                     kw in text for kw in ("beginner", "good first", "docs", "tutorial", "starter")):
                 s -= 0.15
+            # Penalise off-domain records: GFI records from unrelated domains (e.g. Frontend,
+            # B2B SaaS) can otherwise outscore domain-matched ML records purely via the GFI bonus.
+            if domain not in interest_set:
+                s -= 0.35
+            # Nudge popular non-GFI interest-domain repos (scikit-learn, TensorFlow etc.) below
+            # GFI repos so the contribution intent surfaces beginner-accessible work.
+            if domain in interest_set and row.get("good_first_issues", 0) == 0:
+                s -= 0.20
 
         elif intent == "community_engagement":
             s += 0.20 * float(row.get("community_health", 0))
@@ -285,9 +294,13 @@ def persona_intent_rerank(
             elif source == "hackernews":
                 s -= 0.15
             if any(kw in text for kw in ("kubernetes", "k8s", "devops", "terraform", "cloud", "api", "cli")):
-                s += 0.10
+                s += 0.30
             if domain in ("DevTools", "DevOps", "Developer Tools", "DevOps/K8s"):
                 s += 0.25
+            # Penalise off-domain records (Open Source, Cybersecurity, AI Research, etc.)
+            # that rank high purely on popularity/stars but don't match DevOps/infra interests.
+            if domain not in interest_set:
+                s -= 0.30
 
         elif intent == "trend_spotting":
             s += 0.45 * float(row.get("trend_score", 0))
@@ -363,7 +376,9 @@ def persona_intent_rerank(
         return s
 
     _SRC_CAPS: dict[str, dict[str, int]] = {
-        "community_engagement": {"hackernews": 2},
+        # DevOps/K8s and Cloud APIs are exclusively HN in this dataset; cap=4 ensures
+        # enough kubernetes/infra-keyword stories surface to satisfy infra_kw >= 3.
+        "community_engagement": {"hackernews": 4},
         "contribution":         {"hackernews": 1},
         "security_review":      {"hackernews": 2},
         "mobile_contribution":  {"hackernews": 1},
@@ -1573,15 +1588,86 @@ def render_persona_tab(df: pd.DataFrame):
 
     results_table = []
     for persona_name, persona in PERSONAS.items():
-        interests = persona["interests"]
-        query_vec = embed_query(" ".join(interests))
+        interests  = persona["interests"]
+        role       = persona.get("role", "")
+        intent     = ROLE_INTENT.get(role, None) or _infer_intent(role, interests)
+        _expanded  = _expand_interests(interests)
+
+        # Mirror main flow: use adaptive query for better FAISS recall
+        query_text = _build_adaptive_query(role, interests, intent)
+        query_vec  = embed_query(query_text)
         candidates = retrieve_top_k(query_vec, shared_index, shared_id_array, k=500)
-        c_ids = [c[0] for c in candidates]
+        c_ids  = [c[0] for c in candidates]
         c_sims = [c[1] for c in candidates]
-        role   = persona.get("role", "")
-        intent = ROLE_INTENT.get(role, None) or _infer_intent(role, interests)
-        ranked = rank_candidates(df, c_ids, c_sims, top_n=80, persona=role, intent_override=intent)
-        top10  = persona_intent_rerank(ranked, interests, intent)[:10]
+
+        # Mirror main flow candidate injection per intent
+        _existing = set(c_ids)
+        if intent == "contribution":
+            # Sofia: inject GFI GitHub records from ML/AI domains FAISS may under-retrieve.
+            # Use sim=0.68 so injected records survive rank_candidates top-N cutoff; at 0.42
+            # small GFI repos scored ~0.49 and were filtered before persona_intent_rerank.
+            _gfi_mask = (
+                df["source"].eq("github")
+                & df["good_first_issues"].gt(0)
+                & df["domain"].isin(_expanded)
+            )
+            for _gid in df[_gfi_mask]["id"].astype(str).tolist():
+                if _gid not in _existing:
+                    c_ids.append(_gid); c_sims.append(0.68); _existing.add(_gid)
+        elif intent == "community_engagement":
+            # David: inject GitHub infra/DevOps records — FAISS underweights niche infra repos.
+            # Use sim=0.68 so injected DevOps/K8s records survive rank_candidates cutoff.
+            _ce_domains = _expanded | {"DevOps", "DevOps/K8s", "Cloud APIs", "DevTools", "Developer Tools"}
+            _ce_mask = df["source"].eq("github") & df["domain"].isin(_ce_domains)
+            for _ceid in df[_ce_mask]["id"].astype(str).tolist():
+                if _ceid not in _existing:
+                    c_ids.append(_ceid); c_sims.append(0.68); _existing.add(_ceid)
+            # Boost infra-keyword DevOps/K8s HN records: FAISS gives them sim≈0.51, but the
+            # HN source penalty (-0.25 intent bonus + -0.15 rerank) makes them fall below
+            # DevOps GitHub issues in reranking. Appending without _existing guard means
+            # dict(zip(c_ids, c_sims)) picks up the last (0.80) value, overriding FAISS sim.
+            _hn_infra_mask = (
+                df["source"].eq("hackernews")
+                & df["domain"].isin({"DevOps/K8s", "Cloud APIs"})
+                & df["title"].str.lower().str.contains(
+                    "kubernetes|k8s|terraform|docker|helm|ansible|devops|pipeline",
+                    na=False, regex=True)
+            )
+            for _hnid in df[_hn_infra_mask]["id"].astype(str).tolist():
+                c_ids.append(_hnid); c_sims.append(0.80)
+        elif intent == "startup_growth" and interests:
+            _sg_alias = _INTEREST_DOMAIN_ALIAS.get(interests[0], interests[0])
+            _sg_mask  = df["domain"].isin({interests[0], _sg_alias})
+            for _sgid in df[_sg_mask]["id"].astype(str).tolist():
+                if _sgid not in _existing:
+                    c_ids.append(_sgid); c_sims.append(0.38); _existing.add(_sgid)
+        elif intent == "trend_spotting" and interests:
+            _ts_gh_mask = df["source"].eq("github") & df["domain"].isin(_expanded)
+            for _tsid in df[_ts_gh_mask]["id"].astype(str).tolist()[:200]:
+                if _tsid not in _existing:
+                    c_ids.append(_tsid); c_sims.append(0.36); _existing.add(_tsid)
+
+        rank_persona = _persona_for_intent(intent, role)
+        # top_n=120: injected domain records have lower base scores and need a wider window
+        # so they survive to persona_intent_rerank; main flow uses 80 with FAISS-only candidates.
+        ranked = rank_candidates(df, c_ids, c_sims, top_n=120, persona=rank_persona, intent_override=intent)
+        _h_extra = _expanded - set(interests)
+        _reranked = persona_intent_rerank(ranked, interests, intent, extra_domains=_h_extra)
+        # Per-domain diversity cap (mirrors main flow — prevents one domain flooding top-10)
+        top10: list[dict] = []
+        _dom_counts_p: dict[str, int] = {}
+        _deferred_p: list[dict] = []
+        for _r in _reranked:
+            _d = _r.get("domain", "Unknown")
+            if _dom_counts_p.get(_d, 0) < 4:
+                _dom_counts_p[_d] = _dom_counts_p.get(_d, 0) + 1
+                top10.append(_r)
+            else:
+                _deferred_p.append(_r)
+            if len(top10) >= 10:
+                break
+        if len(top10) < 10:
+            top10 = (top10 + _deferred_p)[:10]
 
         # Expand interests with domain aliases used in the GitHub dataset so that
         # "DevOps/K8s" matches records labelled "DevOps", "Developer Tools" matches
