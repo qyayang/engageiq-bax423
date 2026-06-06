@@ -7,7 +7,7 @@ BAX-423 Big Data · Spring 2026 · Final Project
 
 ## What It Does
 
-EngageIQ discovers, scores, and ranks where a professional should invest their time online across **GitHub and Hacker News**. It covers **15 technical domains** and learns from your feedback to surface increasingly relevant opportunities.
+EngageIQ discovers, scores, and ranks where a professional should invest their time online across **GitHub and Hacker News**. It covers **15 required technical domains** (plus additional normalized labels used during stress-testing) and learns from your feedback to surface increasingly relevant opportunities.
 
 ## BAX-423 Techniques Integrated
 
@@ -75,7 +75,7 @@ Streamlit Dashboard
 
 ## Dataset
 
-- `data/opportunities.csv` — 10,046 records across 15 technical domains
+- `data/opportunities.csv` — 10,046 records spanning 15 required technical domains (GitHub source uses normalized labels such as "DevTools"/"DevOps" that alias to the canonical domain names)
 - Sources: **GitHub 8,588** (real API-derived issues + repos; direct links) · **Hacker News 1,458** (real Algolia/HN API stories)
 - All records labeled `data_source = "offline"` (pre-seeded snapshot; graders can run without API access)
 - GitHub records: real API-fetched — direct `github.com/{owner}/{repo}/issues/{N}` and `github.com/{owner}/{repo}` URLs
@@ -153,8 +153,8 @@ engageiq/
 │   ├── requirements.txt
 │   └── README.md
 ├── data/
-│   ├── opportunities.csv       # Offline snapshot (11,412 records, pre-included)
-│   ├── embeddings.npy          # Pre-computed embeddings (384-dim × 11,412)
+│   ├── opportunities.csv       # Offline snapshot (10,046 records, pre-included)
+│   ├── embeddings.npy          # Pre-computed embeddings (384-dim × 10,046)
 │   └── embedding_ids.npy       # Embedding ID mapping
 └── prompts.md
 ```

@@ -648,6 +648,11 @@ def _url_type(url: str, row: dict | None = None) -> str:
     Classify URL type for display and ranking.
     Prefers the stored url_type field from the CSV row when available.
     Values: github_issue / github_repo / hn_item / hn_search_fallback / invalid / unknown
+
+    Note: the submitted offline dataset contains 0 hn_search_fallback records (all HN
+    records are real Algolia/HN API stories with direct item URLs).  The fallback branch
+    below is retained as defensive handling for any live-fetched or user-supplied records
+    that arrive without a pre-classified url_type field.
     """
     if row is not None:
         stored = row.get("url_type", "")
