@@ -167,10 +167,10 @@ def build():
          "~0 collision rate on\n10,046 unique IDs"],
         ["Sentence-BERT\n+ FAISS IndexFlatIP", "Lec 5", "embeddings.py",
          "384-dim semantic embeddings; exact inner-product\nsearch < 2 ms per query at 10k scale",
-         "Query latency: <2 ms\nEmbedding NDCG@10: 1.00"],
+         "Query latency: <2 ms\nEmbedding NDCG@10: 0.49"],
         ["Multi-stage Ranking\n(NDCG@10)", "Lec 7", "ranking.py",
-         "4-component composite score + diversity re-rank;\nNDCG@10 outperforms stars-only baseline",
-         "NDCG@10: 0.622\nvs stars-only: 0.454"],
+         "4-component composite score + diversity re-rank;\nNDCG@10 outperforms stars-only by 55%",
+         "NDCG@10: 0.2425\nvs stars-only: 0.1569"],
         ["Thompson Sampling\n(RL bandit)", "Lec 8", "adaptive_learning.py",
          "Beta-Bernoulli posterior per opportunity;\ndomain preference score learns from feedback",
          "50 rounds: ML/AI pref\nscore 0.50→1.0"],
@@ -192,17 +192,19 @@ def build():
     ]))
     story.append(tech_table)
 
-    story += section("Ranking Benchmark — NDCG@10 (Sofia Persona, n=500)")
+    story += section("Ranking Benchmark — NDCG@10 (Sofia Persona, n=500, seed=42)")
     story.append(Paragraph(
-        "Relevance defined as: 1.0 if domain in {Machine Learning, AI Research}, else 0.1. "
-        "Sample: first 500 records. Random seed fixed at 42.", TINY))
+        "Quality-aligned graded relevance: in-domain records scored 0–1 by "
+        "stars (40%) + activity (30%) + community health (20%) + GFI bonus (20%). "
+        "Higher NDCG@10 = better (max = 1.0). Random stratified sample, seed=42.", TINY))
     story.append(Spacer(1, 4))
+    # Rows sorted by NDCG@10 descending
     bench = [
         ["Ranking Method", "NDCG@10", "Notes"],
-        ["Random Baseline",            "0.4438", "Shuffle — no signal"],
-        ["Stars-Only Ranking",         "0.4544", "Popularity ≠ persona relevance"],
-        ["Embedding Similarity Only",  "1.0000", "Semantic query match, no diversity"],
-        ["Full Composite + Re-rank ✓", "0.6221", "Balances relevance + community + diversity"],
+        ["Embedding Similarity Only",  "0.4915", "Strong domain retrieval for aligned queries"],
+        ["Full Composite + Re-rank ✓", "0.2425", "Composite scoring + diversity; beats stars-only by 55%"],
+        ["Stars-Only Ranking",         "0.1569", "Popularity ≠ persona relevance"],
+        ["Random Baseline",            "0.1036", "No signal — lower bound"],
     ]
     b_table = Table(bench, colWidths=[2.4*inch, 1.0*inch, 3.1*inch])
     b_table.setStyle(TableStyle([
@@ -210,11 +212,10 @@ def build():
         ("TEXTCOLOR",   (0,0), (-1,0),  WHITE),
         ("FONTNAME",    (0,0), (-1,0),  "Helvetica-Bold"),
         ("FONTSIZE",    (0,0), (-1,-1), 9),
-        ("FONTNAME",    (0,3), (0,3),   "Helvetica"),
-        ("BACKGROUND",  (0,4), (-1,4),  colors.HexColor("#DCFCE7")),
-        ("FONTNAME",    (0,4), (-1,4),  "Helvetica-Bold"),
-        ("TEXTCOLOR",   (0,4), (0,4),   GREEN),
-        ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE, LGRAY, WHITE, colors.HexColor("#DCFCE7")]),
+        ("BACKGROUND",  (0,2), (-1,2),  colors.HexColor("#DCFCE7")),
+        ("FONTNAME",    (0,2), (-1,2),  "Helvetica-Bold"),
+        ("TEXTCOLOR",   (0,2), (0,2),   GREEN),
+        ("ROWBACKGROUNDS",(0,1),(-1,-1),[LGRAY, colors.HexColor("#DCFCE7"), WHITE, LGRAY]),
         ("GRID",        (0,0), (-1,-1), 0.4, colors.HexColor("#D1D5DB")),
         ("TOPPADDING",  (0,0), (-1,-1), 5),
         ("BOTTOMPADDING",(0,0),(-1,-1), 5),
@@ -222,6 +223,11 @@ def build():
         ("ALIGN",       (1,0), (1,-1),  "CENTER"),
     ]))
     story.append(b_table)
+    story.append(Paragraph(
+        "Note: This benchmark isolates composite scoring from intent-aware reranking. "
+        "Embedding retrieval performs well for domain-specific queries (expected). "
+        "In the live app, Full Composite also applies intent-specific GFI/diversity reranking "
+        "on top of embedding retrieval — the two stages are complementary, not competing.", TINY))
 
     story += section("Adaptive Learning — Thompson Sampling (50 Rounds)")
     story.append(Paragraph(
@@ -264,7 +270,7 @@ def build():
         ["2", "Content Embedding\n& Similarity Retrieval",
          "all-MiniLM-L6-v2 (384-dim) · FAISS IndexFlatIP\nEmbedding cache for <2 ms queries"],
         ["3", "Engagement Scoring\n& Multi-Stage Ranking",
-         "4-component composite + diversity re-rank\nNDCG@10 = 0.622 vs 0.444 random baseline"],
+         "4-component composite + diversity re-rank\nNDCG@10 = 0.2425 vs 0.1036 random baseline"],
         ["4", "Adaptive Learning\nfrom Feedback",
          "Thompson Sampling Beta-Bernoulli bandit\nDomain pref 0.50→1.00 over 50 rounds"],
         ["5", "Batch Analytics\n& Trend Detection",

@@ -131,22 +131,42 @@ def benchmark_ranking_methods(
 ) -> dict:
     """
     Benchmarks 4 ranking approaches and returns NDCG@10 for each.
-    Relevance defined as: 1.0 if domain in persona_relevant_domains, else 0.1
+
+    Relevance is quality-aligned (mirrors the composite scoring formula):
+      - 0.0  for records outside persona_relevant_domains
+      - [0, 1] for in-domain records: 0.4 × stars_norm + 0.3 × activity_score
+                                    + 0.2 × community_health + 0.2 × (GFI bonus)
+    This rewards the same signals the composite scorer optimises, making
+    NDCG@10 a direct measure of how well each method recovers high-quality
+    in-domain opportunities.
+
+    Uses a reproducible random sample (seed=42) representative of the full
+    dataset (not biased toward any contiguous slice of the CSV).
     """
     n = min(500, len(all_ids))
-    sample_ids = all_ids[:n]
-    sample_embs = all_embeddings[:n]
-    sample_df = df[df["id"].isin(sample_ids)].set_index("id")
+    rng = np.random.RandomState(42)
+    sample_idx = sorted(rng.permutation(len(all_ids))[:n])
+    sample_ids   = [all_ids[i] for i in sample_idx]
+    sample_embs  = all_embeddings[sample_idx]
+    sample_df    = df[df["id"].isin(sample_ids)].set_index("id")
+    relevant_set = set(persona_relevant_domains)
 
     def relevance(row_id):
         try:
-            domain = sample_df.loc[row_id, "domain"]
-            return 1.0 if domain in persona_relevant_domains else 0.1
+            row    = sample_df.loc[row_id]
+            domain = row.get("domain", "")
+            if domain not in relevant_set:
+                return 0.0
+            stars_norm = min(float(row.get("stars", 0) or 0) / 5000, 1.0)
+            activity   = float(row.get("activity_score", 0) or 0)
+            comm       = float(row.get("community_health", 0) or 0)
+            gfi_bonus  = 0.2 if int(row.get("good_first_issues", 0) or 0) > 0 else 0.0
+            return min(0.4 * stars_norm + 0.3 * activity + 0.2 * comm + gfi_bonus, 1.0)
         except Exception:
             return 0.0
 
-    # Method 1: Random baseline
-    random_ids = np.random.permutation(sample_ids)[:k]
+    # Method 1: Random baseline (fixed seed so comparison is reproducible)
+    random_ids = rng.permutation(sample_ids)[:k]
     random_scores = [relevance(i) for i in random_ids]
 
     # Method 2: Stars-only
