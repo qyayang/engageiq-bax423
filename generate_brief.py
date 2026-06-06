@@ -463,6 +463,7 @@ def build():
         ["brief.pdf — this document",                                "✓ Included"],
         ["prompts.md — development + planned runtime prompts",       "✓ Included"],
         ["Live public URL",                                          "https://engageiq-bax423git-qianyingyang.streamlit.app"],
+        ["GitHub Repo",                                              "https://github.com/qyayang/engageiq-bax423"],
         ["ZIP: Yang_Alice_BAX423_Final.zip",                        "✓ Per one-pager spec"],
     ]
     chk_table = Table(chk, colWidths=[4.5*inch, 2.0*inch])
