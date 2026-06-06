@@ -90,14 +90,14 @@ def build():
     story.append(Paragraph(
         "Developers and founders waste hours manually scanning GitHub and Hacker News to find "
         "where to contribute, comment, or build reputation. EngageIQ automates this by ingesting "
-        "11,412 opportunities across 15 technical domains, scoring them via semantic embeddings and "
+        "10,046 opportunities across 15 technical domains, scoring them via semantic embeddings and "
         "community signals, and adapting rankings in real time from user feedback.", BODY))
 
     story += section("System Architecture")
     arch = [
         ["Stage", "Component", "BAX-423 Lecture"],
-        ["1 · Ingestion",   "GitHub API · HN Firebase API\nBloom Filter dedup · Python queue-based on-demand refresh\n"
-                             "HN titles resolved to real item IDs via Algolia search API\n(url_type: github_issue/github_repo/hn_item/hn_search_fallback)", "Lecture 2"],
+        ["1 · Ingestion",   "GitHub API · Algolia/HN Search API\nBloom Filter dedup · Python queue-based on-demand refresh\n"
+                             "Real HN stories fetched by domain keyword queries via Algolia\n(url_type: github_issue/github_repo/hn_item — no fallbacks)", "Lecture 2"],
         ["2 · Embedding",   "Sentence-BERT all-MiniLM-L6-v2 (384-dim)\nFAISS IndexFlatIP — exact search < 2 ms",       "Lecture 5"],
         ["3 · Intent",      "7-intent classifier from role + interests\nAdaptive query expansion + candidate injection",  "app.py"],
         ["4 · Scoring",     "Composite: 0.40 relevance + 0.30 community\n+ 0.20 visibility + 0.10 (1−effort)",           "Lecture 7"],
@@ -127,13 +127,13 @@ def build():
     story += section("Dataset")
     ds = [
         ["Metric", "Value"],
-        ["Total records",         "11,412"],
+        ["Total records",         "10,046"],
         ["Technical domains",     "15"],
         ["GitHub records",        "8,588  (real API-derived issues + repos; direct links)"],
-        ["HN records",            "2,824  (690 resolved to real HN item URLs via Algolia multi-query match;\n"
-                                   "2,134 labeled hn_search_fallback, penalised −0.20; AQ top-5 ≤1 fallback cap)"],
+        ["HN records",            "1,458  (real Algolia/HN API stories; direct news.ycombinator.com/item?id=<objectID> URLs;\n"
+                                   "0 hn_search_fallback records in the submitted dataset)"],
         ["Storage",               "CSV offline snapshot (committed to repo) + SQLite for live records"],
-        ["Live / offline split",  "11,412 offline snapshot · live records added via on-demand refresh"],
+        ["Live / offline split",  "10,046 offline snapshot · live records added via on-demand refresh"],
     ]
     ds_table = Table(ds, colWidths=[2.2*inch, 4.3*inch])
     ds_table.setStyle(TableStyle([
@@ -164,7 +164,7 @@ def build():
         ["Technique", "Lecture", "File", "Role", "Benchmark"],
         ["Bloom Filter\n(sketching/dedup)", "Lec 2", "bloom_filter.py",
          "Rejects duplicate streamed records before DB insert",
-         "~0 collision rate on\n11,412 unique IDs"],
+         "~0 collision rate on\n10,046 unique IDs"],
         ["Sentence-BERT\n+ FAISS IndexFlatIP", "Lec 5", "embeddings.py",
          "384-dim semantic embeddings; exact inner-product\nsearch < 2 ms per query at 10k scale",
          "Query latency: <2 ms\nEmbedding NDCG@10: 1.00"],
@@ -403,7 +403,7 @@ def build():
          "Deterministic template-based engagement action generator\n(avoids API cost, latency, hallucination risk)",
          "LLM-generated actions via Claude / GPT with prompt caching"],
         ["Batch Analytics",
-         "Pandas batch over 11,412-record offline snapshot\n(sufficient for dataset size, <1 s query latency)",
+         "Pandas batch over 10,046-record offline snapshot\n(sufficient for dataset size, <1 s query latency)",
          "Apache Spark / Dask for distributed processing at scale"],
         ["GH Archive",
          "build_real_dataset.py includes GH Archive support;\nnot used in runtime pipeline",
@@ -452,7 +452,7 @@ def build():
     chk = [
         ["Item", "Status"],
         ["code/ — all .py files + requirements.txt",                "✓ Included"],
-        ["data/opportunities.csv — 11,412 offline records (GitHub + HN)","✓ Included"],
+        ["data/opportunities.csv — 10,046 offline records (GitHub + HN)","✓ Included"],
         ["data/embeddings.npy — pre-computed 384-dim embeddings",   "✓ Included"],
         ["brief.pdf — this document",                                "✓ Included"],
         ["prompts.md — development + planned runtime prompts",       "✓ Included"],

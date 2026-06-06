@@ -9,3 +9,6 @@ data/bandit_state.json
 # Env
 .env
 *.env
+
+# Local-only test harness (not for submission)
+hidden_test.py

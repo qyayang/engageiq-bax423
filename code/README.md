@@ -31,7 +31,7 @@ streamlit run app.py
 
 The first run loads the pre-computed embedding cache (~1 second). No re-computation needed.
 
-> **Note:** The offline dataset (`data/opportunities.csv`, 11,412 records) and embeddings (`data/embeddings.npy`) are committed to the repo. Running `build_real_dataset.py` is optional and requires network/API access.
+> **Note:** The offline dataset (`data/opportunities.csv`, 10,046 records) and embeddings (`data/embeddings.npy`) are committed to the repo. Running `build_real_dataset.py` is optional and requires network/API access.
 
 ## Architecture
 
@@ -75,14 +75,14 @@ Streamlit Dashboard
 
 ## Dataset
 
-- `data/opportunities.csv` — 11,412 records across 15 technical domains
-- Sources: **GitHub 8,588** (real API-derived issues + repos; direct links) · **Hacker News 2,824** (offline snapshot)
+- `data/opportunities.csv` — 10,046 records across 15 technical domains
+- Sources: **GitHub 8,588** (real API-derived issues + repos; direct links) · **Hacker News 1,458** (real Algolia/HN API stories)
 - All records labeled `data_source = "offline"` (pre-seeded snapshot; graders can run without API access)
 - GitHub records: real API-fetched — direct `github.com/{owner}/{repo}/issues/{N}` and `github.com/{owner}/{repo}` URLs
-- HN records: 690 resolved to real `news.ycombinator.com/item?id=<objectID>` via Algolia multi-query matching (token overlap ≥0.30 on ≥5-char words, or string similarity ≥0.65); remaining 2,134 labeled `hn_search_fallback` (🔍 indicator), penalised -0.20 in ranking — Action Queue top-5 capped at ≤1 fallback, Full Ranked top-10 capped at ≤3
-- `url_type` field in CSV: `github_issue` / `github_repo` / `hn_item` / `hn_search_fallback`
+- HN records: real Algolia/HN API stories fetched by domain keyword queries — direct `news.ycombinator.com/item?id=<objectID>` URLs; no `hn_search_fallback` records in the submitted dataset
+- `url_type` field in CSV: `github_issue` / `github_repo` / `hn_item` (0 `hn_search_fallback`)
 - Live-fetched records (via "Fetch Live Updates" button) labeled `data_source = "live"` and persisted to SQLite
-- Collected via `build_real_dataset.py`; supplemented by live API on demand
+- Collected via `build_real_dataset.py` and `fetch_real_hn.py`; supplemented by live API on demand
 
 ## Why GitHub + Hacker News?
 
@@ -114,7 +114,7 @@ The same intent inference, query expansion, candidate injection, and intent-awar
 | Product Manager | startup_growth | ✅ PASS |
 | Mobile Developer | mobile_contribution | ✅ PASS |
 | Game Developer | generic | ✅ PASS |
-| Data Engineer | data_engineering | ✅ PASS |
+| Data Engineer | contribution | ✅ PASS |
 | Academic ML Researcher | generic | ✅ PASS |
 | Education Creator | trend_spotting | ✅ PASS |
 | Privacy Researcher | security_review | ✅ PASS |
@@ -147,6 +147,8 @@ engageiq/
 │   ├── data_collector.py       # Live API collectors (GitHub + HN) + streaming ingester
 │   ├── db.py                   # SQLite utilities
 │   ├── build_real_dataset.py   # Optional: re-fetch data from APIs (needs network)
+│   ├── fetch_real_hn.py        # Fetch real HN stories via Algolia API (replaces synthetic HN)
+│   ├── rebuild_embeddings.py   # Rebuild embeddings.npy after CSV changes
 │   ├── generate_offline_data.py # Offline dataset generator (GitHub + HN)
 │   ├── requirements.txt
 │   └── README.md
