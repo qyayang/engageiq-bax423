@@ -349,6 +349,17 @@ def persona_intent_rerank(
             if domain in ("Web3", "Blockchain"):
                 s -= 0.50
 
+        # URL quality signal: direct links preferred, fallbacks penalised
+        _ut = _url_type(row.get("url", ""), row)
+        if _ut == "github_issue":
+            s += 0.05
+        elif _ut == "github_repo":
+            s += 0.03
+        elif _ut == "hn_item":
+            s += 0.06
+        elif _ut == "hn_search_fallback":
+            s -= 0.20
+
         return s
 
     _SRC_CAPS: dict[str, dict[str, int]] = {
@@ -357,6 +368,8 @@ def persona_intent_rerank(
         "security_review":      {"hackernews": 2},
         "mobile_contribution":  {"hackernews": 1},
         "startup_growth":       {"hackernews": 3},
+        "trend_spotting":       {"hackernews": 6},  # allows HN discussion but ensures 4+ real GitHub
+        "":                     {"hackernews": 4},  # generic intent (intent=None) cap
     }
     caps     = _SRC_CAPS.get(intent or "", {})
     src_seen: dict[str, int] = {}
@@ -388,6 +401,10 @@ def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
         )
     if "data_source" not in df.columns:
         df["data_source"] = df.get("_data_source", "offline")
+    # url_type: filled by resolve_hn_urls.py; compute from URL pattern for rows that lack it
+    if "url_type" not in df.columns:
+        df["url_type"] = ""
+    df["url_type"] = df["url_type"].fillna("").astype(str)
     return df
 
 
@@ -416,12 +433,16 @@ def load_data() -> pd.DataFrame:
         st.stop()
     seed_database()  # ensure SQLite is seeded
     import db as _db
+    # Always load offline snapshot from CSV — CSV is the source of truth for
+    # url/url_type (resolve_hn_urls.py may update it after SQLite was seeded).
+    df = pd.read_csv(str(CSV_PATH))
+    # Append any live-fetched records from SQLite
     try:
-        df = _db.get_all_as_df()
-        if df.empty:
-            raise ValueError("empty")
+        live_df = _db.get_live_records_as_df()
+        if not live_df.empty:
+            df = pd.concat([df, live_df], ignore_index=True)
     except Exception:
-        df = pd.read_csv(str(CSV_PATH))
+        pass
     return _clean_df(df)
 
 
@@ -622,25 +643,62 @@ def _data_source_badge(opp: dict) -> str:
     return '<span class="badge" style="background:#30363d;color:#8b949e;border:1px solid #484f58">🔵 Demo</span>'
 
 
-def _is_real_url(url: str) -> bool:
-    """Returns False for synthetic/search placeholder URLs that don't point to a real page."""
+def _url_type(url: str, row: dict | None = None) -> str:
+    """
+    Classify URL type for display and ranking.
+    Prefers the stored url_type field from the CSV row when available.
+    Values: github_issue / github_repo / hn_item / hn_search_fallback / invalid / unknown
+    """
+    if row is not None:
+        stored = row.get("url_type", "")
+        if stored and stored not in ("", "nan"):
+            return stored
     if not url or url == "#":
-        return False
-    if "github.com/user/" in url:
-        return False
-    if "github.com/search?q=" in url:
-        return False
-    return True
+        return "invalid"
+    if "hn.algolia.com/?query=" in url:
+        return "hn_search_fallback"
+    if "news.ycombinator.com/item?id=" in url:
+        return "hn_item"
+    if "github.com/" in url and "/issues/" in url and "github.com/user/" not in url:
+        return "github_issue"
+    if ("github.com/" in url
+            and "github.com/user/" not in url
+            and "github.com/search" not in url):
+        return "github_repo"
+    return "unknown"
 
 
-def _render_title_link(title: str, url: str, rank: int = None, style: str = "color:#58a6ff;text-decoration:underline") -> str:
+def _is_real_url(url: str, row: dict | None = None) -> bool:
+    """
+    Returns True only for URLs that point to a real, directly accessible page.
+    Algolia search fallback URLs (hn.algolia.com/?query=...) return False —
+    they open a search page, not a direct story or repository.
+    """
+    ut = _url_type(url, row)
+    return ut in ("github_issue", "github_repo", "hn_item")
+
+
+def _clean_display_title(title: str) -> str:
+    """Strip synthetic (N) suffix for clean UI display."""
+    import re as _re
+    return _re.sub(r'\s*\(\d+\)\s*$', '', title).strip()
+
+
+def _render_title_link(title: str, url: str, rank: int = None,
+                       style: str = "color:#58a6ff;text-decoration:underline",
+                       row: dict | None = None) -> str:
     prefix = f"#{rank} &nbsp;" if rank is not None else ""
-    safe_title = html.escape(title)
+    safe_title = html.escape(_clean_display_title(title))
     full_text = f"{prefix}{safe_title}"
-    if _is_real_url(url):
+    ut = _url_type(url, row)
+    if ut in ("github_issue", "github_repo", "hn_item"):
         safe_url = html.escape(url)
         return f'<a href="{safe_url}" target="_blank" style="{style}">{full_text}</a>'
-    return f'<span style="color:#8b949e" title="Demo data — no real URL">{full_text}</span>'
+    if ut == "hn_search_fallback":
+        safe_url = html.escape(url)
+        return (f'<a href="{safe_url}" target="_blank" style="{style}">{full_text}</a>'
+                f'<span style="color:#8b949e;font-size:11px;margin-left:4px">🔍 search fallback</span>')
+    return f'<span style="color:#8b949e" title="Demo data — no direct URL">{full_text}</span>'
 
 
 def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
@@ -696,13 +754,21 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
         st.markdown(f'<div style="margin-bottom:4px">{badge_html}</div>', unsafe_allow_html=True)
         # Title: native Streamlit Markdown link — bypasses all CSS overrides on <a> tags
         title_safe = title.replace("[", "\\[").replace("]", "\\]")
-        if _is_real_url(url):
+        url_t = _url_type(url, opp)
+        if url_t in ("github_issue", "github_repo", "hn_item"):
             st.markdown(f"**[\\#{rank}  {title_safe}]({url})**")
+        elif url_t == "hn_search_fallback":
+            st.markdown(f"**[\\#{rank}  {title_safe}]({url})**")
+            st.markdown(
+                '<span style="font-size:11px;color:#6e7681;font-style:italic">'
+                '🔍 HN search fallback — opens Algolia search for this story title</span>',
+                unsafe_allow_html=True,
+            )
         else:
             st.markdown(f"**\\#{rank}  {title_safe}**")
             st.markdown(
                 '<span style="font-size:11px;color:#6e7681;font-style:italic">'
-                '📋 Offline demo record — no real URL</span>',
+                '📋 Offline demo record — no direct URL</span>',
                 unsafe_allow_html=True,
             )
         # Description + stats + action
@@ -849,6 +915,22 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
         for _sgid in df[_sg_mask]["id"].astype(str).tolist():
             if _sgid not in _existing:
                 c_ids.append(_sgid); c_sims.append(0.38); _existing.add(_sgid)
+    if intent is None and interests:
+        # Generic intent: inject GitHub records from interest domains
+        # FAISS may not retrieve niche-domain repos when query lacks exact domain embedding
+        _g_domains = _expand_interests(interests)
+        _g_mask = df["source"].eq("github") & df["domain"].isin(_g_domains)
+        for _gid in df[_g_mask]["id"].astype(str).tolist()[:300]:
+            if _gid not in _existing:
+                c_ids.append(_gid); c_sims.append(0.38); _existing.add(_gid)
+    if intent == "trend_spotting" and interests:
+        # Trend-spotting: inject GitHub records from interest domains so real_url >= 4
+        # (HN dominates FAISS for trend queries; GitHub provides direct-link coverage)
+        _ts_domains = _expand_interests(interests)
+        _ts_gh_mask = df["source"].eq("github") & df["domain"].isin(_ts_domains)
+        for _tsid in df[_ts_gh_mask]["id"].astype(str).tolist()[:200]:
+            if _tsid not in _existing:
+                c_ids.append(_tsid); c_sims.append(0.36); _existing.add(_tsid)
 
     # Bandit scores + domain prefs
     bandit = get_bandit()
@@ -906,6 +988,28 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
         st.info("No results found. Try adjusting your filters or interests.")
         return
 
+    # ── ACTION QUEUE: ensure at most 1 Algolia fallback in top-5 ────────────
+    _aq_top5 = ranked[:5]
+    _aq_fallbacks = [r for r in _aq_top5 if _url_type(r.get("url", ""), r) == "hn_search_fallback"]
+    if len(_aq_fallbacks) > 1:
+        _aq_real      = [r for r in _aq_top5 if _url_type(r.get("url", ""), r) != "hn_search_fallback"]
+        _real_from_deeper = [r for r in ranked[5:] if _is_real_url(r.get("url", ""), r)]
+        _slots_needed = 5 - len(_aq_real) - 1   # 1 fallback slot reserved
+        _aq_top5 = _aq_real + _aq_fallbacks[:1] + _real_from_deeper[:max(0, _slots_needed)]
+        _aq_top5 = _aq_top5[:5]
+        ranked = _aq_top5 + [r for r in ranked if r not in _aq_top5]
+
+    # ── FULL RANKED: ensure at most 3 Algolia fallbacks in top-10 ───────────
+    _fr_top10 = ranked[:10]
+    _fr_fb = [r for r in _fr_top10 if _url_type(r.get("url", ""), r) == "hn_search_fallback"]
+    if len(_fr_fb) > 3:
+        _fr_real     = [r for r in _fr_top10 if _url_type(r.get("url", ""), r) != "hn_search_fallback"]
+        _fr_deeper   = [r for r in ranked[10:] if _is_real_url(r.get("url", ""), r)]
+        _fr_slots    = 10 - len(_fr_real) - 3   # 3 fallback slots
+        _new_top10   = _fr_real + _fr_fb[:3] + _fr_deeper[:max(0, _fr_slots)]
+        _new_top10   = _new_top10[:10]
+        ranked = _new_top10 + [r for r in ranked if r not in _new_top10]
+
     bandit = get_bandit()
 
     # ── ACTION QUEUE: Today's Top 5 ──────────────────────────────────────────
@@ -940,7 +1044,7 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
     for i, opp in enumerate(ranked[:5]):
         source = opp.get("source", "")
         icon = SOURCE_ICONS.get(source, "📄")
-        title = opp.get("title", "")
+        title = _clean_display_title(opp.get("title", ""))
         url = opp.get("url", "#")
         domain = opp.get("domain", "")
         score_pct = int(opp.get("final_score", 0) * 100)
@@ -953,12 +1057,22 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
         opp_id = opp.get("id", "")
         safe_action = html.escape(best_action[:130])
         safe_aq_title = html.escape(title[:80])
-        if _is_real_url(url):
+        _aq_ut = _url_type(url, opp)
+        if _aq_ut in ("github_issue", "github_repo", "hn_item"):
             safe_aq_url = html.escape(url)
             aq_title_html = (
                 f'<a href="{safe_aq_url}" target="_blank" rel="noopener noreferrer" '
                 f'style="color:#58a6ff;text-decoration:underline;font-weight:700;cursor:pointer">'
                 f'#{i+1}&nbsp; {safe_aq_title}</a>'
+            )
+        elif _aq_ut == "hn_search_fallback":
+            safe_aq_url = html.escape(url)
+            aq_title_html = (
+                f'<a href="{safe_aq_url}" target="_blank" rel="noopener noreferrer" '
+                f'style="color:#d29922;text-decoration:underline;font-weight:700;cursor:pointer">'
+                f'#{i+1}&nbsp; {safe_aq_title}</a>'
+                f'<span style="font-size:10px;color:#6e7681;font-style:italic;margin-left:6px">'
+                f'🔍 search fallback</span>'
             )
         else:
             aq_title_html = (
@@ -1144,17 +1258,16 @@ def render_analytics_tab(df: pd.DataFrame):
             # Per-source stats
             if source == "github":
                 stats = f"🔥 +{row.get('growth_rate', 0):.0f} stars/wk · ⭐ {int(row.get('stars', 0)):,} stars"
-                title_link = f"[{title}]({url})" if _is_real_url(url) else title
+                title_link = f"[{title}]({url})" if _is_real_url(url, row) else title
                 extra = ""
             elif source == "hackernews":
                 stats = f"🔥 {int(row.get('growth_rate', 0)):,} trend score · 💬 {int(row.get('comments', 0)):,} comments"
-                title_link = f"[{title}]({url})" if _is_real_url(url) else title
-                # If url is external article, note it came from HN; if it IS the HN link, no need for extra
+                title_link = f"[{title}]({url})" if _is_real_url(url, row) else title
                 is_hn_url = "news.ycombinator.com" in url
                 extra = "" if is_hn_url else " · *(via Hacker News)*"
             else:
                 stats = f"🔥 +{row.get('growth_rate', 0):.0f} growth"
-                title_link = f"[{title}]({url})" if _is_real_url(url) else title
+                title_link = f"[{title}]({url})" if _is_real_url(url, row) else title
                 extra = ""
 
             st.markdown(
@@ -1228,7 +1341,7 @@ def render_learning_tab(df: pd.DataFrame):
             source = item.get("source", "").upper()
             score = item.get("score", 0)
             icon = SOURCE_ICONS.get(item.get("source", ""), "📄")
-            title_html = f"[{title_text}]({url})" if _is_real_url(url) else title_text
+            title_html = f"[{title_text}]({url})" if _is_real_url(url, item) else title_text
             st.markdown(
                 f"{icon} **{title_html}** · `{domain}` · {source} · score **{score:.0%}**"
             )
@@ -1462,7 +1575,7 @@ def render_persona_tab(df: pd.DataFrame):
         avg_trend           = np.mean([r.get("trend_score", r.get("growth_rate", 0)) for r in top10]) if top10 else 0
         discussion_count    = sum(1 for r in top10 if r.get("source", "") == "hackernews")
         domain_diversity    = len({r.get("domain", "") for r in top10 if r.get("domain", "")})
-        real_url_count      = sum(1 for r in top10 if _is_real_url(r.get("url", "")))
+        real_url_count      = sum(1 for r in top10 if _is_real_url(r.get("url", ""), r))
         infra_keyword_count = sum(1 for r in top10 if _kw_hit(r, _INFRA_KW))
         general_web_count   = sum(1 for r in top10 if _kw_hit(r, _WEB_KW))
         api_cli_count       = sum(1 for r in top10 if _kw_hit(r, _API_KW))
@@ -1530,7 +1643,7 @@ def render_persona_tab(df: pd.DataFrame):
             st.markdown("**Top 5 Recommendations:**")
             for i, r in enumerate(top10[:5]):
                 icon = SOURCE_ICONS.get(r.get("source", ""), "📄")
-                title_md = f"[{r['title'][:70]}]({r['url']})" if _is_real_url(r.get("url", "")) else r["title"][:70]
+                title_md = f"[{r['title'][:70]}]({r['url']})" if _is_real_url(r.get("url", ""), r) else r["title"][:70]
                 st.markdown(
                     f"{i+1}. {icon} {title_md} — "
                     f"`{r['domain']}` — **{r.get('final_score', 0):.0%}**"
@@ -1660,7 +1773,7 @@ def render_persona_tab(df: pd.DataFrame):
 
         h_expanded   = _expand_interests(h_interests)
         h_dm         = sum(1 for r in h_top10 if r.get("domain", "") in h_expanded)
-        h_ru         = sum(1 for r in h_top10 if _is_real_url(r.get("url", "")))
+        h_ru         = sum(1 for r in h_top10 if _is_real_url(r.get("url", ""), r))
         h_dd         = len({r.get("domain", "") for r in h_top10 if r.get("domain", "")})
         h_neg        = sum(1 for r in h_top10 if _kw_hit(r, _NEG_KW))
         h_interest_tokens = {

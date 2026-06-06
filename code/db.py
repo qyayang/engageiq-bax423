@@ -128,6 +128,15 @@ def get_all_as_df():
     return df
 
 
+def get_live_records_as_df():
+    """Return only live-fetched records (data_source='live') from SQLite."""
+    import pandas as pd
+    conn = get_connection()
+    df = pd.read_sql("SELECT * FROM opportunities WHERE data_source = 'live'", conn)
+    conn.close()
+    return df
+
+
 def get_count() -> int:
     conn = get_connection()
     n = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]

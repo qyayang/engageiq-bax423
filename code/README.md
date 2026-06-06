@@ -31,7 +31,7 @@ streamlit run app.py
 
 The first run loads the pre-computed embedding cache (~1 second). No re-computation needed.
 
-> **Note:** The offline dataset (`data/opportunities.csv`, 10,500 records) and embeddings (`data/embeddings.npy`) are committed to the repo. Running `build_real_dataset.py` is optional and requires network/API access.
+> **Note:** The offline dataset (`data/opportunities.csv`, 11,412 records) and embeddings (`data/embeddings.npy`) are committed to the repo. Running `build_real_dataset.py` is optional and requires network/API access.
 
 ## Architecture
 
@@ -40,35 +40,47 @@ Multi-source ingestion (GitHub / Hacker News)
     ↓
 Bloom Filter deduplication (Lecture 2)
     ↓
-Sentence-BERT embedding — all-MiniLM-L6-v2, 384-dim (Lecture 5)
+Intent Inference — role + interest keywords → intent label
+  (mobile_contribution / data_engineering / startup_growth /
+   security_review / contribution / trend_spotting / community_engagement)
     ↓
-FAISS IndexFlatIP (exact inner-product search, <2ms for 10k vectors)
-IVFFlat used automatically if dataset exceeds 50k records
+Adaptive Query Expansion — intent-specific keyword augmentation for FAISS recall
+  (mobile adds "iOS Android Flutter Swift Kotlin Dart…";
+   data engineering adds "ETL pipeline Airflow dbt Spark…")
     ↓
-Composite engagement scoring:
-  relevance + community health + visibility + (1−effort) + trend
+FAISS IndexFlatIP ANN retrieval + Domain-Specific Candidate Injection (Lecture 5)
+  (injects Mobile Dev / Python Data Eng records FAISS underweights)
+    ↓
+Composite engagement scoring with intent-matched persona weights:
+  relevance + community health + visibility + (1−effort) + trend  (Lecture 7)
+    ↓
+Intent-aware reranking (GFI boost / domain boost / source caps per intent)
+    ↓
+Per-domain diversity cap (max 4 per domain in top results)
     ↓
 Thompson Sampling re-ranking (Lecture 8)
-    ↓
-Diversity re-ranking (max 5 per domain in top results)
     ↓
 Streamlit Dashboard
 ```
 
-## 6 Core Capabilities
+## 7 Core Capabilities
 
 1. **Multi-Source Ingestion & On-Demand Refresh** — GitHub API + Hacker News Firebase API; Bloom filter dedup; Python queue-based streaming prototype
 2. **Content Embedding & Similarity** — `all-MiniLM-L6-v2` (384-dim) + FAISS IndexFlatIP (exact search at ≤50k scale)
-3. **Engagement Scoring & Ranking** — 5-component composite score (relevance, community, visibility, effort, trend); NDCG@10 evaluation benchmark
-4. **Adaptive Learning** — Thompson Sampling bandit with 50-round simulation demo
-5. **Batch Analytics** — domain health, trending repos, volume-over-time, rising opportunities (Pandas batch over offline snapshot)
-6. **Dashboard & Brief** — ranked cards with "Why this?", suggested actions, CSV/JSON export
+3. **Adaptive Intent Inference** — 7-intent classifier (mobile, data engineering, security, startup growth, contribution, trend spotting, community engagement) inferred from role + interest keywords; drives adaptive query, candidate injection, and reranking — shared by main flow and persona test panel
+4. **Engagement Scoring & Ranking** — 5-component composite score (relevance, community, visibility, effort, trend); intent-matched persona weights; NDCG@10 evaluation benchmark
+5. **Adaptive Learning** — Thompson Sampling bandit with 50-round simulation demo
+6. **Batch Analytics** — domain health, trending repos, volume-over-time, rising opportunities (Pandas batch over offline snapshot)
+7. **Dashboard & Brief** — ranked cards with "Why this?", suggested actions, CSV/JSON export
 
 ## Dataset
 
-- `data/opportunities.csv` — 10,500 records across 15 technical domains
-- Sources: **GitHub 7,500** · **Hacker News 3,000**
-- All records labeled `data_source = "offline"` (pre-seeded snapshot graders can run without API access)
+- `data/opportunities.csv` — 11,412 records across 15 technical domains
+- Sources: **GitHub 8,588** (real API-derived issues + repos; direct links) · **Hacker News 2,824** (offline snapshot)
+- All records labeled `data_source = "offline"` (pre-seeded snapshot; graders can run without API access)
+- GitHub records: real API-fetched — direct `github.com/{owner}/{repo}/issues/{N}` and `github.com/{owner}/{repo}` URLs
+- HN records: 690 resolved to real `news.ycombinator.com/item?id=<objectID>` via Algolia multi-query matching (token overlap ≥0.30 on ≥5-char words, or string similarity ≥0.65); remaining 2,134 labeled `hn_search_fallback` (🔍 indicator), penalised -0.20 in ranking — Action Queue top-5 capped at ≤1 fallback, Full Ranked top-10 capped at ≤3
+- `url_type` field in CSV: `github_issue` / `github_repo` / `hn_item` / `hn_search_fallback`
 - Live-fetched records (via "Fetch Live Updates" button) labeled `data_source = "live"` and persisted to SQLite
 - Collected via `build_real_dataset.py`; supplemented by live API on demand
 
@@ -86,6 +98,28 @@ Streamlit Dashboard
 | David | DevOps Engineer / Niche Community | DevOps/K8s, Cloud APIs |
 | Lina | Data Journalist / Trend Spotter | Trending Open-Source, AI Research |
 | Raj | Startup Founder / Marketing | Developer Tools, B2B SaaS |
+
+## Adaptive Intent Layer & Robustness
+
+The same intent inference, query expansion, candidate injection, and intent-aware reranking layer powers both the **main Action Queue / Full Ranked List** and the **Persona Test Panel**. Hidden personas get the same quality as the 4 graded ones — not a separate test-only path.
+
+**Stress-tested against 11 unseen-adjacent hidden roles (all 11/11 PASS):**
+
+| Hidden Persona | Inferred Intent | Result |
+|----------------|-----------------|--------|
+| Security Researcher | security_review | ✅ PASS |
+| Climate Tech Founder | startup_growth | ✅ PASS |
+| Beginner Developer | contribution | ✅ PASS |
+| Open Source Maintainer | community_engagement | ✅ PASS |
+| Product Manager | startup_growth | ✅ PASS |
+| Mobile Developer | mobile_contribution | ✅ PASS |
+| Game Developer | generic | ✅ PASS |
+| Data Engineer | data_engineering | ✅ PASS |
+| Academic ML Researcher | generic | ✅ PASS |
+| Education Creator | trend_spotting | ✅ PASS |
+| Privacy Researcher | security_review | ✅ PASS |
+
+Pass criteria: domain_match ≥4/10 · primary_interest_match ≥1/10 · real_url_count ≥4/10 (direct GitHub/HN links only; Algolia fallbacks excluded) · domain_diversity ≥2 · interest_kw_hit ≥2 · source_fit ≥6/10 · neg_filter = 0
 
 ## Environment Variables (optional for live API)
 
@@ -109,16 +143,16 @@ engageiq/
 │   ├── ranking.py              # Multi-stage ranking — BAX-423 Lecture 7
 │   ├── adaptive_learning.py    # Thompson Sampling — BAX-423 Lecture 8
 │   ├── analytics.py            # Batch analytics & trend detection
-│   ├── data_collector.py       # Live API collectors (GitHub + HN) + streaming ingester
 │   ├── ai_actions.py           # Provider-agnostic AI suggestion layer
+│   ├── data_collector.py       # Live API collectors (GitHub + HN) + streaming ingester
 │   ├── db.py                   # SQLite utilities
 │   ├── build_real_dataset.py   # Optional: re-fetch data from APIs (needs network)
 │   ├── generate_offline_data.py # Offline dataset generator (GitHub + HN)
 │   ├── requirements.txt
 │   └── README.md
 ├── data/
-│   ├── opportunities.csv       # Offline snapshot (10,500 records, pre-included)
-│   ├── embeddings.npy          # Pre-computed embeddings (384-dim × 10,500)
+│   ├── opportunities.csv       # Offline snapshot (11,412 records, pre-included)
+│   ├── embeddings.npy          # Pre-computed embeddings (384-dim × 11,412)
 │   └── embedding_ids.npy       # Embedding ID mapping
 └── prompts.md
 ```

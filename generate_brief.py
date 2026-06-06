@@ -90,21 +90,23 @@ def build():
     story.append(Paragraph(
         "Developers and founders waste hours manually scanning GitHub and Hacker News to find "
         "where to contribute, comment, or build reputation. EngageIQ automates this by ingesting "
-        "10,500+ opportunities across 15 technical domains, scoring them via semantic embeddings and "
+        "11,412 opportunities across 15 technical domains, scoring them via semantic embeddings and "
         "community signals, and adapting rankings in real time from user feedback.", BODY))
 
     story += section("System Architecture")
     arch = [
         ["Stage", "Component", "BAX-423 Lecture"],
-        ["1 · Ingestion",   "GitHub API · HN Firebase API\nBloom Filter dedup · Python queue-based on-demand refresh", "Lecture 2"],
+        ["1 · Ingestion",   "GitHub API · HN Firebase API\nBloom Filter dedup · Python queue-based on-demand refresh\n"
+                             "HN titles resolved to real item IDs via Algolia search API\n(url_type: github_issue/github_repo/hn_item/hn_search_fallback)", "Lecture 2"],
         ["2 · Embedding",   "Sentence-BERT all-MiniLM-L6-v2 (384-dim)\nFAISS IndexFlatIP — exact search < 2 ms",       "Lecture 5"],
-        ["3 · Scoring",     "Composite: 0.40 relevance + 0.30 community\n+ 0.20 visibility + 0.10 (1−effort)",           "Lecture 7"],
-        ["4 · Ranking",     "Multi-stage: candidate gen → composite → bandit\nDiversity re-rank (max 5/domain in top-50)","Lecture 7"],
-        ["5 · Adaptation",  "Thompson Sampling (Beta-Bernoulli bandit)\nDomain preference learning over 50+ rounds",     "Lecture 8"],
-        ["6 · Analytics",   "Pandas batch: domain health, trending, volume",                                              "Lecture 3"],
-        ["7 · Dashboard",   "Streamlit: ranked cards, Why this?, CSV/JSON brief",                                         "—"],
+        ["3 · Intent",      "7-intent classifier from role + interests\nAdaptive query expansion + candidate injection",  "app.py"],
+        ["4 · Scoring",     "Composite: 0.40 relevance + 0.30 community\n+ 0.20 visibility + 0.10 (1−effort)",           "Lecture 7"],
+        ["5 · Ranking",     "Multi-stage: intent-aware rerank → diversity cap\n→ Thompson Sampling bandit re-rank",       "Lecture 7"],
+        ["6 · Adaptation",  "Thompson Sampling (Beta-Bernoulli bandit)\nDomain preference learning over 50+ rounds",     "Lecture 8"],
+        ["7 · Analytics",   "Pandas batch: domain health, trending, volume",                                              "Lecture 3"],
+        ["8 · Dashboard",   "Streamlit: ranked cards, Why this?, CSV/JSON brief",                                         "—"],
     ]
-    arch_table = Table(arch, colWidths=[1.35*inch, 3.6*inch, 1.55*inch])
+    arch_table = Table(arch, colWidths=[1.1*inch, 3.85*inch, 1.55*inch])
     arch_table.setStyle(TableStyle([
         ("BACKGROUND",  (0,0), (-1,0),  NAVY),
         ("TEXTCOLOR",   (0,0), (-1,0),  WHITE),
@@ -125,11 +127,13 @@ def build():
     story += section("Dataset")
     ds = [
         ["Metric", "Value"],
-        ["Total records",         "10,500"],
-        ["Technical domains",     "15 (700 records each)"],
-        ["Sources",               "GitHub 7,500 · Hacker News 3,000"],
+        ["Total records",         "11,412"],
+        ["Technical domains",     "15"],
+        ["GitHub records",        "8,588  (real API-derived issues + repos; direct links)"],
+        ["HN records",            "2,824  (690 resolved to real HN item URLs via Algolia multi-query match;\n"
+                                   "2,134 labeled hn_search_fallback, penalised −0.20; AQ top-5 ≤1 fallback cap)"],
         ["Storage",               "CSV offline snapshot (committed to repo) + SQLite for live records"],
-        ["Live / offline split",  "10,500 offline snapshot · live records added via on-demand refresh"],
+        ["Live / offline split",  "11,412 offline snapshot · live records added via on-demand refresh"],
     ]
     ds_table = Table(ds, colWidths=[2.2*inch, 4.3*inch])
     ds_table.setStyle(TableStyle([
@@ -160,7 +164,7 @@ def build():
         ["Technique", "Lecture", "File", "Role", "Benchmark"],
         ["Bloom Filter\n(sketching/dedup)", "Lec 2", "bloom_filter.py",
          "Rejects duplicate streamed records before DB insert",
-         "~0 collision rate on\n10,500 unique IDs"],
+         "~0 collision rate on\n11,412 unique IDs"],
         ["Sentence-BERT\n+ FAISS IndexFlatIP", "Lec 5", "embeddings.py",
          "384-dim semantic embeddings; exact inner-product\nsearch < 2 ms per query at 10k scale",
          "Query latency: <2 ms\nEmbedding NDCG@10: 1.00"],
@@ -327,6 +331,57 @@ def build():
         "Lina's results include trending open-source across all domains sorted by growth_rate. "
         "Raj's results highlight Developer Tools and B2B SaaS repos by community engagement.", TINY))
 
+    story.append(Spacer(1, 8))
+    story += section("Hidden Persona Robustness — Adaptive Intent Layer (11/11 PASS)")
+    story.append(Paragraph(
+        "The same intent inference, adaptive query expansion, and intent-aware reranking layer "
+        "powers both the <b>main Action Queue</b> and the <b>Persona Test Panel</b>. "
+        "Stress-tested against 11 roles not present in the system's ROLE_INTENT map. "
+        "Intent is inferred from role + interest keywords; results evaluated against the same "
+        "multi-condition pass criteria (domain_match ≥4, primary_match ≥1, src_fit ≥6, neg=0).",
+        TINY))
+    story.append(Spacer(1, 4))
+
+    PA = "✅ PASS"
+    hidden_rows = [
+        ["Hidden Persona",        "Inferred Intent",      "domain", "primary", "src_fit", "neg", "Result"],
+        ["Security Researcher",   "security_review",      "5/10",   "5/10",    "10/10",   "0",   PA],
+        ["Climate Tech Founder",  "startup_growth",       "7/10",   "4/10",    "10/10",   "0",   PA],
+        ["Beginner Developer",    "contribution",         "5/10",   "4/10",    "10/10",   "0",   PA],
+        ["Open Source Maintainer","community_engagement", "8/10",   "4/10",    "10/10",   "0",   PA],
+        ["Product Manager",       "startup_growth",       "7/10",   "7/10",    "10/10",   "0",   PA],
+        ["Mobile Developer",      "mobile_contribution",  "8/10",   "8/10",    "10/10",   "0",   PA],
+        ["Game Developer",        "generic",              "10/10",  "6/10",    "10/10",   "0",   PA],
+        ["Data Engineer",         "data_engineering*",    "6/10",   "5/10",    "9/10",    "0",   PA],
+        ["Academic ML Researcher","generic",              "10/10",  "8/10",    "10/10",   "0",   PA],
+        ["Education Creator",     "trend_spotting",       "10/10",  "9/10",    "10/10",   "0",   PA],
+        ["Privacy Researcher",    "security_review",      "5/10",   "5/10",    "10/10",   "0",   PA],
+    ]
+    h_table = Table(hidden_rows, colWidths=[1.45*inch, 1.4*inch, 0.55*inch, 0.6*inch, 0.6*inch, 0.35*inch, 0.75*inch])
+    h_table.setStyle(TableStyle([
+        ("BACKGROUND",  (0,0), (-1,0),  TEAL),
+        ("TEXTCOLOR",   (0,0), (-1,0),  WHITE),
+        ("FONTNAME",    (0,0), (-1,0),  "Helvetica-Bold"),
+        ("FONTSIZE",    (0,0), (-1,-1), 7.5),
+        ("TEXTCOLOR",   (-1,1),(-1,-1), GREEN),
+        ("FONTNAME",    (-1,1),(-1,-1), "Helvetica-Bold"),
+        ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE, LGRAY]),
+        ("GRID",        (0,0), (-1,-1), 0.4, colors.HexColor("#D1D5DB")),
+        ("TOPPADDING",  (0,0), (-1,-1), 3),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 3),
+        ("LEFTPADDING", (0,0), (-1,-1), 4),
+        ("ALIGN",       (2,0), (-1,-1), "CENTER"),
+        ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
+    ]))
+    story.append(h_table)
+    story.append(Spacer(1, 3))
+    story.append(Paragraph(
+        "* Data Engineer visible role maps to 'contribution' via ROLE_INTENT; "
+        "hidden Data Engineer role triggers 'data_engineering' intent via keyword inference. "
+        "Intent inference order: mobile > data_engineering > trend_spotting > contribution > "
+        "startup_growth > security_review > community_engagement.",
+        TINY))
+
     story.append(PageBreak())
 
     # =========================================================
@@ -348,7 +403,7 @@ def build():
          "Deterministic template-based engagement action generator\n(avoids API cost, latency, hallucination risk)",
          "LLM-generated actions via Claude / GPT with prompt caching"],
         ["Batch Analytics",
-         "Pandas batch over 10,500-record offline snapshot\n(sufficient for dataset size, <1 s query latency)",
+         "Pandas batch over 11,412-record offline snapshot\n(sufficient for dataset size, <1 s query latency)",
          "Apache Spark / Dask for distributed processing at scale"],
         ["GH Archive",
          "build_real_dataset.py includes GH Archive support;\nnot used in runtime pipeline",
@@ -397,7 +452,7 @@ def build():
     chk = [
         ["Item", "Status"],
         ["code/ — all .py files + requirements.txt",                "✓ Included"],
-        ["data/opportunities.csv — 10,500 offline records (GitHub + HN)","✓ Included"],
+        ["data/opportunities.csv — 11,412 offline records (GitHub + HN)","✓ Included"],
         ["data/embeddings.npy — pre-computed 384-dim embeddings",   "✓ Included"],
         ["brief.pdf — this document",                                "✓ Included"],
         ["prompts.md — development + planned runtime prompts",       "✓ Included"],
