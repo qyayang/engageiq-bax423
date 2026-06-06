@@ -35,6 +35,7 @@ def rank_candidates(
     filters: Optional[dict] = None,
     top_n: int = 50,
     persona: str = "",
+    intent_override: str | None = None,
 ) -> list[dict]:
     """
     Full multi-stage ranking:
@@ -64,7 +65,7 @@ def rank_candidates(
     for _, row in subset.iterrows():
         row_dict = row.to_dict()
         sim = id_to_sim.get(row_dict["id"], 0.0)
-        scores = compute_composite_score(row_dict, sim, persona=persona)
+        scores = compute_composite_score(row_dict, sim, persona=persona, intent_override=intent_override)
 
         # Bandit adjustment (item-level): engaged items rise, skipped items fall
         bandit_boost = 0.0
@@ -87,7 +88,7 @@ def rank_candidates(
         row_dict.update(scores)
         row_dict["final_score"] = round(final_score, 4)
         row_dict["explanation"] = build_score_explanation(row_dict, scores)
-        row_dict["suggested_actions"] = suggest_actions(row_dict, persona=persona)
+        row_dict["suggested_actions"] = suggest_actions(row_dict, persona=persona, intent_override=intent_override)
 
         results.append(row_dict)
 

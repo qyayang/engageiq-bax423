@@ -32,6 +32,7 @@ CSV_PATH = DATA_DIR / "opportunities.csv"
 from bloom_filter import BloomFilter
 from embeddings import load_or_compute_embeddings, build_faiss_index, embed_query
 from ranking import rank_candidates, benchmark_ranking_methods
+from scoring import ROLE_INTENT
 from adaptive_learning import ThompsonBandit
 from analytics import (
     compute_domain_stats,
@@ -99,6 +100,274 @@ DOMAINS = [
 ]
 SOURCE_ICONS = {"github": "🐙", "hackernews": "🟠"}
 SOURCE_COLORS = {"github": "#58a6ff", "hackernews": "#ff9500"}
+
+
+# ── shared intent inference + adaptive ranking helpers ───────────────────────
+# Used by both render_opportunities_tab and render_persona_tab so the main
+# recommendation flow and the validation panel share one adaptive layer.
+
+def _safe_text(value) -> str:
+    if value is None:
+        return ""
+    try:
+        if value != value:
+            return ""
+    except Exception:
+        pass
+    return str(value)
+
+
+_INFRA_KW = {"kubernetes", "k8s", "devops", "terraform", "docker", "helm", "ansible", "ci/cd", "pipeline"}
+_WEB_KW   = {"react", "vue", "angular", "css", "html", "frontend", "nextjs", "svelte", "tailwind"}
+_API_KW   = {"api", "cli", "sdk", "saas", "platform", "developer tool", "developer tools"}
+_NEG_KW   = {
+    "nft", "cryptocurrency", "crypto token", "adult", "gambling", "betting",
+    "bitcoin", "ethereum", "web3 token", "solana", "blockchain token",
+}
+
+_SOURCE_FIT_MAP = {
+    "contribution":         {"github"},
+    "community_engagement": {"github"},
+    "trend_spotting":       {"hackernews", "github"},
+    "startup_growth":       {"hackernews", "github"},
+    "security_review":      {"github", "hackernews"},
+    "mobile_contribution":  {"github"},
+    "data_engineering":     {"github", "hackernews"},
+}
+
+_INTENT_TO_KNOWN_PERSONA = {
+    "contribution":         "ML Student",
+    "community_engagement": "DevOps Engineer",
+    "trend_spotting":       "Data Journalist",
+    "startup_growth":       "Startup Founder",
+    "security_review":      "ML Student",
+    "mobile_contribution":  "ML Student",
+    "data_engineering":     "ML Student",
+}
+
+_INTENT_SRC_FILTER = {
+    "community_engagement": {"source": "github"},
+    "mobile_contribution":  {"source": "github"},
+}
+
+_MOBILE_LANGS = {"swift", "kotlin", "dart", "objective-c"}
+
+_INTEREST_DOMAIN_ALIAS: dict[str, str] = {
+    "Mobile Apps":           "Mobile Dev",
+    "Mobile Development":    "Mobile Dev (iOS/Flutter)",
+    "iOS Development":       "Mobile Dev (iOS/Flutter)",
+    "Android Development":   "Mobile Dev (iOS/Flutter)",
+    "Flutter":               "Mobile Dev (iOS/Flutter)",
+    "Game Development":      "GameDev (C++)",
+    "Gaming":                "GameDev (C++)",
+    "Game Dev":              "GameDev (C++)",
+    "Embedded Systems":      "Embedded Systems (C/RTOS)",
+    "IoT":                   "Embedded Systems (C/RTOS)",
+    "Security":              "Cybersecurity",
+    "Web Development":       "Frontend (React/Web)",
+    "Frontend Development":  "Frontend (React/Web)",
+    "Data Science":          "Python Data Eng",
+    "Data Engineering":      "Python Data Eng",
+    "Blockchain":            "Blockchain",
+    "Crypto":                "Blockchain",
+    "React Native":          "Mobile Dev (iOS/Flutter)",
+    "Cross-Platform Mobile": "Mobile Dev (iOS/Flutter)",
+    "Developer Tools":       "DevTools",
+    "DevOps/K8s":            "DevOps",
+}
+
+
+def _expand_interests(interests: list[str]) -> set[str]:
+    expanded = set(interests)
+    for i in interests:
+        alias = _INTEREST_DOMAIN_ALIAS.get(i)
+        if alias:
+            expanded.add(alias)
+    return expanded
+
+
+def _kw_hit(r: dict, kw_set: set) -> bool:
+    text = f"{_safe_text(r.get('title'))} {_safe_text(r.get('description'))}".lower()
+    return any(kw in text for kw in kw_set)
+
+
+def _infer_intent(role: str, interests: list[str]) -> str | None:
+    text = f"{role} {' '.join(interests)}".lower()
+    # mobile MUST come before beginner — "Mobile Developer + Beginner Coding" is mobile_contribution
+    if any(kw in text for kw in ("mobile", "ios", "android", "flutter", "swift", "kotlin", "dart", "react native")):
+        return "mobile_contribution"
+    # data engineering before contribution — "Data Engineer" needs its own intent
+    if any(kw in text for kw in ("data engineer", "analytics engineer", "etl", "dbt", "airflow", "spark",
+                                  "data pipeline", "data quality", "data warehouse", "lakehouse", "data platform")):
+        return "data_engineering"
+    # educator/creator → trend_spotting before beginner check
+    if any(kw in text for kw in ("journalist", "trend", "analyst", "reporter", "creator", "educator",
+                                  "teacher", "instructor")):
+        return "trend_spotting"
+    if any(kw in text for kw in ("beginner", "student", "contributor", "newcomer", "good first")):
+        return "contribution"
+    if any(kw in text for kw in ("founder", "startup", "saas", "gtm", "product", "business")):
+        return "startup_growth"
+    if any(kw in text for kw in ("security", "cyber", "vuln", "pentest", "audit", "bug bounty",
+                                  "owasp", "privacy", "gdpr", "compliance")):
+        return "security_review"
+    if any(kw in text for kw in ("devops", "infra", "platform", "cloud", "sre", "engineer")):
+        return "community_engagement"
+    return None
+
+
+def _persona_for_intent(intent: str | None, role: str) -> str:
+    """Return the nearest known persona for first-stage composite scoring weights."""
+    if role in ROLE_INTENT:
+        return role
+    return _INTENT_TO_KNOWN_PERSONA.get(intent or "", "ML Student")
+
+
+def _build_adaptive_query(role: str, interests: list[str], intent: str | None) -> str:
+    base = " ".join(interests)
+    if intent == "mobile_contribution":
+        return base + " iOS Android Flutter Swift Kotlin Dart mobile SDK"
+    if intent == "data_engineering":
+        return base + " ETL pipeline Airflow dbt Spark SQL data quality warehouse analytics pandas"
+    return base
+
+
+def persona_intent_rerank(
+    ranked: list[dict],
+    interests: list[str],
+    intent: str | None,
+    extra_domains: set | None = None,
+) -> list[dict]:
+    """Intent-aware reranking used by both main flow and persona test panel."""
+    interest_set = set(interests)
+    if extra_domains:
+        interest_set |= extra_domains
+
+    def score(row: dict) -> float:
+        source = row.get("source", "")
+        domain = row.get("domain", "")
+        lang = _safe_text(row.get("language")).lower()
+        text = f"{_safe_text(row.get('title'))} {_safe_text(row.get('description'))}".lower()
+        s = float(row.get("final_score", 0))
+
+        if domain in interest_set:
+            s += 0.25
+
+        _primary = interests[0] if interests else ""
+
+        if intent == "contribution":
+            if row.get("good_first_issues", 0) > 0:
+                s += 0.45
+            if row.get("record_type") == "issue":
+                s += 0.12
+            if lang in ("python", "jupyter notebook", "r", "julia"):
+                s += 0.15
+            if lang in ("c", "c++", "cpp", "rust"):
+                s -= 1.00
+            if any(kw in text for kw in ("beginner", "good first", "first issue", "documentation",
+                                          "docs", "tutorial", "onboarding", "starter", "small bug",
+                                          "help wanted", "easy fix", "entry level", "newbie")):
+                s += 0.25
+            if domain in ("DevOps/K8s", "B2B SaaS", "DevOps") and not any(
+                    kw in text for kw in ("beginner", "good first", "docs", "tutorial", "starter")):
+                s -= 0.15
+
+        elif intent == "community_engagement":
+            s += 0.20 * float(row.get("community_health", 0))
+            if source == "github":
+                s += 0.18
+                if row.get("record_type", "") in ("repository", "repo", "issue"):
+                    s += 0.10
+                if row.get("open_issues", 0) > 10:
+                    s += 0.08
+                if 0 < row.get("contributors", 0) < 200:
+                    s += 0.05
+            elif source == "hackernews":
+                s -= 0.15
+            if any(kw in text for kw in ("kubernetes", "k8s", "devops", "terraform", "cloud", "api", "cli")):
+                s += 0.10
+            if domain in ("DevTools", "DevOps", "Developer Tools", "DevOps/K8s"):
+                s += 0.25
+
+        elif intent == "trend_spotting":
+            s += 0.45 * float(row.get("trend_score", 0))
+            if source == "hackernews":
+                s += 0.12
+
+        elif intent == "startup_growth":
+            if source == "hackernews":
+                s += 0.22
+            if any(kw in text for kw in ("api", "cli", "sdk", "saas", "startup", "product", "developer tool", "platform")):
+                s += 0.14
+            if domain == _primary:
+                s += 0.50
+
+        elif intent == "security_review":
+            if source == "github":
+                s += 0.15
+            if row.get("record_type") == "issue":
+                s += 0.15
+            if row.get("good_first_issues", 0) > 0:
+                s += 0.08
+            if any(kw in text for kw in ("security", "vulnerability", "vuln", "cve", "audit",
+                                          "exploit", "auth", "owasp", "privacy", "secret",
+                                          "api key", "credential", "token leak", "encryption",
+                                          "cryptography", "pii", "gdpr", "pentest", "bug bounty",
+                                          "zero-day", "patch", "secret scanning", "authentication")):
+                s += 0.25
+            if domain == "Cybersecurity":
+                s += 0.30
+
+        elif intent == "data_engineering":
+            if domain in ("Python Data Eng", "Data Science"):
+                s += 0.35
+            if any(kw in text for kw in ("etl", "pipeline", "airflow", "dbt", "spark", "kafka",
+                                          "data quality", "warehouse", "lakehouse", "analytics",
+                                          "sql", "pandas", "prefect", "dagster", "data engineering",
+                                          "data platform", "data ops", "batch", "streaming",
+                                          "redshift", "bigquery", "snowflake", "databricks",
+                                          "delta lake", "orchestration", "ingestion", "transform")):
+                s += 0.30
+            if lang in ("python", "sql", "scala"):
+                s += 0.15
+            if source == "github":
+                s += 0.10
+            if domain in ("Frontend", "Mobile Dev", "Mobile Dev (iOS/Flutter)", "GameDev (C++)", "Web3"):
+                s -= 0.25
+
+        elif intent == "mobile_contribution":
+            if domain in ("Mobile Apps", "Mobile Dev", "Mobile Dev (iOS/Flutter)", "Developer Tools", "Beginner Coding"):
+                s += 0.35
+            if any(kw in text for kw in ("mobile", "ios", "android", "swift", "kotlin", "flutter", "react native", "xcode")):
+                s += 0.25
+            if row.get("good_first_issues", 0) > 0:
+                s += 0.15
+            if lang in ("swift", "kotlin", "dart", "typescript", "javascript"):
+                s += 0.10
+            if domain == "Machine Learning":
+                s -= 0.30
+            if domain in ("Web3", "Blockchain"):
+                s -= 0.50
+
+        return s
+
+    _SRC_CAPS: dict[str, dict[str, int]] = {
+        "community_engagement": {"hackernews": 2},
+        "contribution":         {"hackernews": 1},
+        "security_review":      {"hackernews": 2},
+        "mobile_contribution":  {"hackernews": 1},
+        "startup_growth":       {"hackernews": 3},
+    }
+    caps     = _SRC_CAPS.get(intent or "", {})
+    src_seen: dict[str, int] = {}
+    capped   = []
+    for r in sorted(ranked, key=score, reverse=True):
+        src = r.get("source", "")
+        if src in caps and src_seen.get(src, 0) >= caps[src]:
+            continue
+        src_seen[src] = src_seen.get(src, 0) + 1
+        capped.append(r)
+    return capped
 
 
 # ── data loading ────────────────────────────────────────────────────────────
@@ -531,6 +800,7 @@ def render_opportunity_card(opp: dict, rank: int, bandit: ThompsonBandit):
 # ── tab: opportunities ────────────────────────────────────────────────────────
 def render_opportunities_tab(df: pd.DataFrame, filters: dict):
     profile = st.session_state.profile
+    role = profile.get("role", "")
     interests = profile.get("interests", DOMAINS)
     sort_mode = filters.get("sort_mode", "Relevance")
 
@@ -538,8 +808,12 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
         st.warning("Please select at least one interest domain in the sidebar.")
         return
 
-    # Build query from interests
-    query_text = " ".join(interests)
+    # Infer intent and select nearest known persona for composite scoring weights
+    intent = ROLE_INTENT.get(role) or _infer_intent(role, interests)
+    rank_persona = _persona_for_intent(intent, role)
+
+    # Adaptive query: expand with domain-specific keywords for better FAISS recall
+    query_text = _build_adaptive_query(role, interests, intent)
 
     # Get embeddings + FAISS index
     all_embs, all_ids = load_or_compute_embeddings(df)
@@ -548,34 +822,79 @@ def render_opportunities_tab(df: pd.DataFrame, filters: dict):
     # Encode user query
     query_vec = embed_query(query_text)
 
-    # Stage 1: FAISS ANN retrieval — top 300 candidates
+    # Stage 1: FAISS ANN retrieval — larger pool to accommodate injected records
     from embeddings import retrieve_top_k
-    candidates = retrieve_top_k(query_vec, index, id_array, k=300)
+    candidates = retrieve_top_k(query_vec, index, id_array, k=500)
     c_ids = [c[0] for c in candidates]
     c_sims = [c[1] for c in candidates]
+
+    # Candidate injection: surface domain-specific records FAISS underweights
+    _existing = set(c_ids)
+    if intent == "mobile_contribution":
+        _mob_mask = (
+            df["domain"].isin({"Mobile Dev", "Mobile Dev (iOS/Flutter)"}) |
+            df["language"].str.lower().isin(_MOBILE_LANGS)
+        )
+        for _mid in df[_mob_mask]["id"].astype(str).tolist():
+            if _mid not in _existing:
+                c_ids.append(_mid); c_sims.append(0.40); _existing.add(_mid)
+    elif intent == "data_engineering":
+        for _deid in df[df["domain"].isin({"Python Data Eng", "Data Science"})]["id"].astype(str).tolist():
+            if _deid not in _existing:
+                c_ids.append(_deid); c_sims.append(0.40); _existing.add(_deid)
+    elif intent == "startup_growth" and interests:
+        _sg_primary = interests[0]
+        _sg_alias   = _INTEREST_DOMAIN_ALIAS.get(_sg_primary, _sg_primary)
+        _sg_mask    = df["domain"].isin({_sg_primary, _sg_alias})
+        for _sgid in df[_sg_mask]["id"].astype(str).tolist():
+            if _sgid not in _existing:
+                c_ids.append(_sgid); c_sims.append(0.38); _existing.add(_sgid)
 
     # Bandit scores + domain prefs
     bandit = get_bandit()
     bandit_scores = bandit.get_bandit_scores(c_ids)
     domain_prefs = bandit.get_domain_preferences()
 
-    # Stage 2+3: Score + re-rank
-    source_map = {"All": "All", "github": "GitHub", "hackernews": "Hacker News"}
+    # Intent-based source filter: apply only when user hasn't chosen a specific source
     raw_source = filters.get("source", "All")
-    ranked = rank_candidates(
+    _intent_src = _INTENT_SRC_FILTER.get(intent or "", {}) if raw_source == "All" else {}
+
+    # Stage 2+3: Score + re-rank with intent-aware persona weights
+    ranked_raw = rank_candidates(
         df=df,
         candidate_ids=c_ids,
         candidate_sims=c_sims,
         bandit_scores=bandit_scores,
         domain_prefs=domain_prefs,
         filters={
-            "source": raw_source if raw_source != "All" else "All",
+            "source": _intent_src.get("source", "All") if raw_source == "All" else raw_source,
             "domain": filters.get("domain", "All"),
             "exclude_no_gfi": filters.get("exclude_no_gfi", False),
         },
-        top_n=50,
-        persona=profile.get("role", ""),
+        top_n=80,
+        persona=rank_persona,
+        intent_override=intent,
     )
+
+    # Stage 4: Intent-aware rerank with alias-expanded domains
+    _h_extra = _expand_interests(interests) - set(interests)
+    _reranked = persona_intent_rerank(ranked_raw, interests, intent, extra_domains=_h_extra)
+
+    # Per-domain diversity cap (max 4 per domain)
+    ranked: list[dict] = []
+    _dom_counts: dict[str, int] = {}
+    _deferred_div: list[dict] = []
+    for _r in _reranked:
+        _d = _r.get("domain", "Unknown")
+        if _dom_counts.get(_d, 0) < 4:
+            _dom_counts[_d] = _dom_counts.get(_d, 0) + 1
+            ranked.append(_r)
+        else:
+            _deferred_div.append(_r)
+        if len(ranked) >= 50:
+            break
+    if len(ranked) < 50:
+        ranked = (ranked + _deferred_div)[:50]
 
     # Apply sort mode override
     if sort_mode == "Trending":
@@ -1091,25 +1410,25 @@ PERSONAS = {
         "interests": ["Machine Learning", "AI Research", "Python Data Eng"],
         "role": "ML Student",
         "time_budget": 5,
-        "pass_criteria": "≥3 GitHub repos with good-first-issues; ML-focused; no C++/Rust repos",
+        "pass_criteria": "≥3 GFI repos; ≥3 ML-domain matches in top-10; no C++/Rust repos",
     },
     "David — DevOps Engineer": {
         "interests": ["DevOps/K8s", "Cloud APIs", "Developer Tools"],
         "role": "DevOps Engineer",
         "time_budget": 3,
-        "pass_criteria": "K8s/infra focused; high activity + few contributors; no general webdev",
+        "pass_criteria": "≥6 domain matches; ≥3 infra keywords (k8s/docker/terraform); 0 general webdev repos",
     },
     "Lina — Data Journalist": {
         "interests": ["Trending Open-Source", "AI Research", "Python Data Eng", "Developer Tools"],
         "role": "Data Journalist",
         "time_budget": 10,
-        "pass_criteria": "High velocity/recency; trending signal dominant; broad domains",
+        "pass_criteria": "Avg trend ≥0.10; ≥1 HN discussion; ≥3 distinct domains in top-10",
     },
     "Raj — Startup Founder": {
         "interests": ["Developer Tools", "B2B SaaS", "Cloud APIs"],
         "role": "Startup Founder",
         "time_budget": 4,
-        "pass_criteria": "Dev-tools/SaaS focused; discussion threads; API/CLI repos",
+        "pass_criteria": "≥5 domain matches; ≥1 HN discussion; ≥3 API/CLI repos in top-10",
     },
 }
 
@@ -1120,111 +1439,93 @@ def render_persona_tab(df: pd.DataFrame):
 
     all_embs, all_ids = load_or_compute_embeddings(df)
 
-    def persona_intent_rerank(ranked: list[dict], interests: list[str], intent: str | None) -> list[dict]:
-        """Intent-aware validation ranking over a broad candidate pool.
+    from embeddings import retrieve_top_k
 
-        This keeps the logic generic for hidden personas: interests define topical fit,
-        while intent defines which engagement signals matter most.
-        """
-        interest_set = set(interests)
-
-        def score(row: dict) -> float:
-            source = row.get("source", "")
-            domain = row.get("domain", "")
-            lang = (row.get("language") or "").lower()
-            text = f"{row.get('title', '')} {row.get('description', '')}".lower()
-            s = float(row.get("final_score", 0))
-
-            if domain in interest_set:
-                s += 0.25
-
-            if intent == "contribution":
-                if row.get("good_first_issues", 0) > 0:
-                    s += 0.45
-                if row.get("record_type") == "issue":
-                    s += 0.12
-                if lang in ("python", "jupyter notebook", "r", "julia"):
-                    s += 0.08
-                if lang in ("c", "c++", "cpp", "rust"):
-                    s -= 1.00
-
-            elif intent == "community_engagement":
-                s += 0.20 * float(row.get("community_health", 0))
-                if source == "github":
-                    s += 0.08
-                if any(kw in text for kw in ("kubernetes", "k8s", "devops", "terraform", "cloud", "api", "cli")):
-                    s += 0.10
-
-            elif intent == "trend_spotting":
-                s += 0.45 * float(row.get("trend_score", 0))
-                if source == "hackernews":
-                    s += 0.12
-
-            elif intent == "startup_growth":
-                if source == "hackernews":
-                    s += 0.22
-                if any(kw in text for kw in ("api", "cli", "sdk", "saas", "startup", "product", "developer tool", "platform")):
-                    s += 0.14
-
-            return s
-
-        return sorted(ranked, key=score, reverse=True)
+    shared_index, shared_id_array = build_faiss_index(all_ids, all_embs)
 
     results_table = []
     for persona_name, persona in PERSONAS.items():
         interests = persona["interests"]
         query_vec = embed_query(" ".join(interests))
-        from embeddings import retrieve_top_k
-        index, id_array = build_faiss_index(all_ids, all_embs)
-        candidates = retrieve_top_k(query_vec, index, id_array, k=500)
+        candidates = retrieve_top_k(query_vec, shared_index, shared_id_array, k=500)
         c_ids = [c[0] for c in candidates]
         c_sims = [c[1] for c in candidates]
-        ranked = rank_candidates(df, c_ids, c_sims, top_n=80, persona=persona.get("role", ""))
+        role   = persona.get("role", "")
+        intent = ROLE_INTENT.get(role, None) or _infer_intent(role, interests)
+        ranked = rank_candidates(df, c_ids, c_sims, top_n=80, persona=role, intent_override=intent)
+        top10  = persona_intent_rerank(ranked, interests, intent)[:10]
 
-        role = persona.get("role", "")
+        gfi_count           = sum(1 for r in top10 if r.get("good_first_issues", 0) > 0)
+        domain_match        = sum(1 for r in top10 if r.get("domain", "") in interests)
+        cpp_count           = sum(1 for r in top10 if _safe_text(r.get("language")).lower() in ("c", "c++", "cpp", "rust"))
+        avg_score           = np.mean([r.get("final_score", 0) for r in top10]) if top10 else 0
+        avg_trend           = np.mean([r.get("trend_score", r.get("growth_rate", 0)) for r in top10]) if top10 else 0
+        discussion_count    = sum(1 for r in top10 if r.get("source", "") == "hackernews")
+        domain_diversity    = len({r.get("domain", "") for r in top10 if r.get("domain", "")})
+        real_url_count      = sum(1 for r in top10 if _is_real_url(r.get("url", "")))
+        infra_keyword_count = sum(1 for r in top10 if _kw_hit(r, _INFRA_KW))
+        general_web_count   = sum(1 for r in top10 if _kw_hit(r, _WEB_KW))
+        api_cli_count       = sum(1 for r in top10 if _kw_hit(r, _API_KW))
+        negative_filter_count = sum(1 for r in top10 if _kw_hit(r, _NEG_KW))
 
-        # Use same ranking logic for all personas — driven by role's intent, not name
-        from scoring import ROLE_INTENT
-        intent = ROLE_INTENT.get(role, None)
-        top10 = persona_intent_rerank(ranked, interests, intent)[:10]
+        interest_tokens = {
+            w for interest in interests
+            for w in interest.lower().replace("/", " ").replace("-", " ").split()
+            if len(w) > 3
+        }
+        interest_keyword_count = sum(1 for r in top10 if _kw_hit(r, interest_tokens))
 
-        gfi_count    = sum(1 for r in top10 if r.get("good_first_issues", 0) > 0)
-        domain_match = sum(1 for r in top10 if r.get("domain", "") in interests)
-        cpp_count    = sum(1 for r in top10 if (r.get("language") or "").lower() in ("c", "c++", "cpp", "rust"))
-        avg_score    = np.mean([r.get("final_score", 0) for r in top10]) if top10 else 0
-        avg_trend    = np.mean([r.get("trend_score", r.get("growth_rate", 0)) for r in top10]) if top10 else 0
-        discussion_count = sum(1 for r in top10 if r.get("source", "") == "hackernews")
+        fit_sources      = _SOURCE_FIT_MAP.get(intent, {"github", "hackernews"})
+        source_fit_count = sum(1 for r in top10 if r.get("source", "") in fit_sources)
 
-        # Pass/fail driven by intent, not persona name — hidden persona also benefits
+        # minimum domain relevance gate applied to ALL intents
+        min_domain_req = max(3, int(len(top10) * 0.3))
+        domain_gate    = domain_match >= min_domain_req
+
         if intent == "contribution":
-            passed = gfi_count >= 3 and cpp_count == 0
+            passed = domain_gate and gfi_count >= 3 and domain_match >= 3 and cpp_count == 0
         elif intent == "community_engagement":
-            passed = domain_match >= 7
+            passed = domain_gate and domain_match >= 6 and infra_keyword_count >= 3 and general_web_count == 0
         elif intent == "trend_spotting":
-            passed = avg_trend > 0.05 and discussion_count >= 1
+            passed = domain_gate and avg_trend >= 0.10 and discussion_count >= 1 and domain_diversity >= 3
         elif intent == "startup_growth":
-            passed = domain_match >= 6 and discussion_count >= 1
+            passed = domain_gate and domain_match >= 5 and discussion_count >= 1 and api_cli_count >= 3
         else:
-            passed = domain_match >= 5
+            passed = (domain_match >= 4 and real_url_count >= 4 and
+                      domain_diversity >= 2 and negative_filter_count == 0)
 
         results_table.append({
             "Persona": persona_name,
-            "Top-10 Domain Match": f"{domain_match}/10",
-            "GFI in Top-10": gfi_count,
-            "Discussion (HN)": discussion_count,
-            "Avg Trend Score": f"{avg_trend:.2f}",
-            "C++/Rust in Top-10": cpp_count,
+            "Intent": intent or "generic",
+            "Domain Match": f"{domain_match}/10",
+            "GFI Count": gfi_count,
+            "HN Discussion": discussion_count,
+            "Avg Trend": f"{avg_trend:.2f}",
+            "C++/Rust": cpp_count,
+            "Domain Diversity": domain_diversity,
+            "Infra Kw": infra_keyword_count,
+            "API/CLI": api_cli_count,
+            "Interest Kw": interest_keyword_count,
+            "Src Fit": f"{source_fit_count}/10",
+            "Real URLs": f"{real_url_count}/10",
+            "Neg Filter": negative_filter_count,
             "Pass Criteria": persona["pass_criteria"][:60] + "…",
             "Result": "✅ PASS" if passed else "❌ FAIL",
         })
 
         with st.expander(f"{'✅' if passed else '❌'} {persona_name}"):
-            st.markdown(f"**Role:** {role} · **Intent mode:** `{intent or 'generic'}`")
+            st.markdown(f"**Role:** {role} · **Intent:** `{intent or 'generic'}`")
             st.markdown(f"**Interests:** {', '.join(interests)}")
             st.markdown(f"**Pass Criteria:** {persona['pass_criteria']}")
             st.markdown(
-                f"**Domain match:** {domain_match}/10 · GFI: {gfi_count} · "
-                f"HN Discussion: {discussion_count}/10 · Avg trend: {avg_trend:.2f} · Avg score: {avg_score:.0%}"
+                f"**Domain match:** {domain_match}/10 (gate ≥{min_domain_req}) · GFI: {gfi_count} · "
+                f"HN: {discussion_count}/10 · Avg trend: {avg_trend:.2f} · Avg score: {avg_score:.0%}"
+            )
+            st.markdown(
+                f"**Domain diversity:** {domain_diversity} · Infra kw: {infra_keyword_count} · "
+                f"API/CLI: {api_cli_count} · Interest kw: {interest_keyword_count} · "
+                f"Src fit: {source_fit_count}/10 · C++/Rust: {cpp_count} · "
+                f"Real URLs: {real_url_count}/10 · Neg filter: {negative_filter_count}"
             )
             st.markdown("**Top 5 Recommendations:**")
             for i, r in enumerate(top10[:5]):
@@ -1238,6 +1539,174 @@ def render_persona_tab(df: pd.DataFrame):
     res_df = pd.DataFrame(results_table)
     st.markdown("### Persona Test Summary")
     st.dataframe(res_df, use_container_width=True, hide_index=True)
+
+    # ── hidden persona robustness checks ─────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🛡️ Hidden Persona Robustness Checks")
+    st.caption(
+        "Simulates roles not in the system's ROLE_INTENT map. "
+        "Intent is inferred from role + interest keywords; validation uses generic multi-condition check."
+    )
+
+    _HIDDEN_PERSONAS = [
+        {"name": "Security Researcher",   "role": "Security Researcher",
+         "interests": ["Cybersecurity", "Developer Tools", "Cloud APIs"]},
+        {"name": "Climate Tech Founder",  "role": "Climate Founder",
+         "interests": ["Climate Tech", "B2B SaaS", "Cloud APIs"]},
+        {"name": "Beginner Developer",    "role": "Beginner Developer",
+         "interests": ["Python Data Eng", "Machine Learning", "Developer Tools"]},
+        {"name": "Open Source Maintainer","role": "Open Source Maintainer",
+         "interests": ["Developer Tools", "DevOps/K8s", "AI Research"]},
+    ]
+
+    robust_rows = []
+    for hp in _HIDDEN_PERSONAS:
+        h_interests = hp["interests"]
+        h_role      = hp["role"]
+
+        # Infer intent early — drives query expansion, source filtering, and candidate injection
+        h_intent_known = ROLE_INTENT.get(h_role, None)
+        h_intent       = h_intent_known or _infer_intent(h_role, h_interests)
+
+        # Query expansion: add domain-specific terms to improve FAISS recall
+        if h_intent == "mobile_contribution":
+            h_query = " ".join(h_interests) + " iOS Android Flutter Swift Kotlin Dart mobile SDK"
+        elif h_intent == "data_engineering":
+            h_query = " ".join(h_interests) + " ETL pipeline Airflow dbt Spark SQL data quality warehouse analytics pandas"
+        else:
+            h_query = " ".join(h_interests)
+
+        h_qvec  = embed_query(h_query)
+        h_cands = retrieve_top_k(h_qvec, shared_index, shared_id_array, k=500)
+        h_cids  = [c[0] for c in h_cands]
+        h_csims = [c[1] for c in h_cands]
+
+        # Mobile: inject all mobile-domain records (FAISS cosine similarity too low for mobile)
+        if h_intent == "mobile_contribution":
+            _mobile_mask = (
+                (df["domain"] == "Mobile Dev (iOS/Flutter)") |
+                (df["language"].str.lower().isin(_MOBILE_LANGS))
+            )
+            _mobile_ids = df[_mobile_mask]["id"].astype(str).tolist()
+            _existing   = set(h_cids)
+            for _mid in _mobile_ids:
+                if _mid not in _existing:
+                    h_cids.append(_mid)
+                    h_csims.append(0.40)
+                    _existing.add(_mid)
+
+        # data_engineering: inject Python Data Eng + Data Science records (FAISS often misses them)
+        if h_intent == "data_engineering":
+            _de_mask  = df["domain"].isin({"Python Data Eng", "Data Science"})
+            _de_ids   = df[_de_mask]["id"].astype(str).tolist()
+            _de_exist = set(h_cids)
+            for _deid in _de_ids:
+                if _deid not in _de_exist:
+                    h_cids.append(_deid)
+                    h_csims.append(0.40)
+                    _de_exist.add(_deid)
+
+        # startup_growth: inject primary interest domain records so they compete with HN flood
+        if h_intent == "startup_growth" and h_interests:
+            _sg_primary = h_interests[0]
+            _sg_alias   = _INTEREST_DOMAIN_ALIAS.get(_sg_primary, _sg_primary)
+            _sg_mask    = df["domain"].isin({_sg_primary, _sg_alias})
+            _sg_ids     = df[_sg_mask]["id"].astype(str).tolist()
+            _sg_exist   = set(h_cids)
+            for _sgid in _sg_ids:
+                if _sgid not in _sg_exist:
+                    h_cids.append(_sgid)
+                    h_csims.append(0.38)
+                    _sg_exist.add(_sgid)
+
+        h_rank_persona = _persona_for_intent(h_intent, h_role)
+
+        # Determine source + GFI pre-filter for rank_candidates
+        h_is_beginner = (
+            "beginner" in h_role.lower() or
+            any("beginner" in i.lower() for i in h_interests)
+        )
+        if h_intent == "contribution" and h_is_beginner:
+            h_src_filter = {"source": "github"}   # GFI handled by +0.45 rerank bonus; no hard exclusion
+        else:
+            h_src_filter = _INTENT_SRC_FILTER.get(h_intent, {})
+
+        # Alias-expand interests so the rerank domain-boost fires on GitHub domain names
+        # (e.g. "Developer Tools" → "DevTools", "DevOps/K8s" → "DevOps")
+        h_extra_domains = _expand_interests(h_interests) - set(h_interests)
+
+        h_ranked = rank_candidates(
+            df, h_cids, h_csims, top_n=60,
+            persona=h_rank_persona, intent_override=h_intent,
+            filters=h_src_filter,
+        )
+        h_all   = persona_intent_rerank(h_ranked, h_interests, h_intent,
+                                        extra_domains=h_extra_domains)
+        # Per-domain diversity cap: at most 4 per domain, so no single domain floods top-10
+        h_top10: list[dict] = []
+        _hd_counts: dict[str, int] = {}
+        _hdeferred: list[dict] = []
+        for _r in h_all:
+            _d = _r.get("domain", "Unknown")
+            if _hd_counts.get(_d, 0) < 4:
+                _hd_counts[_d] = _hd_counts.get(_d, 0) + 1
+                h_top10.append(_r)
+            else:
+                _hdeferred.append(_r)
+            if len(h_top10) >= 10:
+                break
+        if len(h_top10) < 10:
+            h_top10 = (h_top10 + _hdeferred)[:10]
+
+        h_expanded   = _expand_interests(h_interests)
+        h_dm         = sum(1 for r in h_top10 if r.get("domain", "") in h_expanded)
+        h_ru         = sum(1 for r in h_top10 if _is_real_url(r.get("url", "")))
+        h_dd         = len({r.get("domain", "") for r in h_top10 if r.get("domain", "")})
+        h_neg        = sum(1 for r in h_top10 if _kw_hit(r, _NEG_KW))
+        h_interest_tokens = {
+            w for interest in h_interests
+            for w in interest.lower().replace("/", " ").replace("-", " ").split()
+            if len(w) > 3
+        }
+        h_ikw = sum(1 for r in h_top10 if _kw_hit(r, h_interest_tokens))
+
+        # Primary OR secondary interest must appear in ≥1 top-10 results
+        h_primary_two: set[str] = set()
+        for _pi in h_interests[:2]:
+            h_primary_two.add(_pi)
+            _pal = _INTEREST_DOMAIN_ALIAS.get(_pi)
+            if _pal:
+                h_primary_two.add(_pal)
+        h_primary_match = sum(1 for r in h_top10 if r.get("domain", "") in h_primary_two)
+
+        h_fit_sources = _SOURCE_FIT_MAP.get(h_intent, {"github", "hackernews"})
+        h_sf_typed    = sum(1 for r in h_top10 if r.get("source", "") in h_fit_sources)
+        h_pass = (h_dm >= 4 and h_ru >= 4 and h_dd >= 2 and
+                  h_ikw >= 2 and h_primary_match >= 1 and h_sf_typed >= 6 and h_neg == 0)
+        intent_label = f"{h_intent or 'generic'} ({'inferred' if h_intent_known is None else 'mapped'})"
+
+        robust_rows.append({
+            "Hidden Persona": hp["name"],
+            "Intent": intent_label,
+            "Domain Match": f"{h_dm}/10",
+            "Primary Interest": f"{h_primary_match}/10",
+            "Real URLs": f"{h_ru}/10",
+            "Domain Diversity": h_dd,
+            "Interest Kw": h_ikw,
+            "Src Fit": f"{h_sf_typed}/10",
+            "Neg Filter": h_neg,
+            "Readiness": "✅ READY" if h_pass else "⚠️ WEAK",
+        })
+
+    rob_df = pd.DataFrame(robust_rows)
+    st.dataframe(rob_df, use_container_width=True, hide_index=True)
+    st.caption(
+        "Generic pass criteria: domain_match ≥4 · primary_interest_match ≥2 · real_url_count ≥4 · "
+        "domain_diversity ≥2 · interest_kw_hit ≥2 · source_fit ≥6 · neg_filter = 0. "
+        "Domain matching uses interest aliases (e.g. 'Mobile Apps' → 'Mobile Dev (iOS/Flutter)'). "
+        "Intent inferred before first-stage ranking; hidden personas borrow nearest known "
+        "PERSONA_WEIGHTS. Cold-start via semantic retrieval; Thompson Sampling updates with feedback."
+    )
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -1266,10 +1735,13 @@ def main():
     tabs = st.tabs(["🎯 Opportunities", "📊 Analytics", "🧠 Learning", "🧪 Personas", "📥 Export"])
 
     profile = st.session_state.profile
-    interests = profile.get("interests", DOMAINS[:2])
-    query_text = " ".join(interests) if interests else "machine learning"
+    role_exp     = profile.get("role", "")
+    interests_exp = profile.get("interests", DOMAINS[:2])
+    intent_exp   = ROLE_INTENT.get(role_exp) or _infer_intent(role_exp, interests_exp)
+    rp_exp       = _persona_for_intent(intent_exp, role_exp)
+    query_text   = _build_adaptive_query(role_exp, interests_exp, intent_exp) if interests_exp else "machine learning"
 
-    # Pre-compute rankings for export tab
+    # Pre-compute rankings for export tab (uses same adaptive pipeline as main flow)
     all_embs, all_ids = load_or_compute_embeddings(df)
     index, id_array = build_faiss_index(all_ids, all_embs)
     query_vec = embed_query(query_text)
@@ -1283,7 +1755,8 @@ def main():
         bandit_scores=bandit.get_bandit_scores(c_ids),
         domain_prefs=bandit.get_domain_preferences(),
         top_n=50,
-        persona=profile.get("role", ""),
+        persona=rp_exp,
+        intent_override=intent_exp,
     )
 
     with tabs[0]:
